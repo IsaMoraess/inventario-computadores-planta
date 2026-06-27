@@ -1,0 +1,16 @@
+id,sala,x,y,status,ip,patrimonio,usuario,sistema,ram,processador,observacoes
+PC-01,Recepção,510,790,Ativo,192.168.0.11,TI001,João Silva,Windows 11,16 GB,Intel Core i5-10400,Computador da recepção com acesso ao sistema de atendimento.
+PC-02,Sala esquerda 01,177,1328,Manutenção,192.168.0.12,TI002,Maria Souza,Windows 10,8 GB,Intel Core i3-9100,Aguardando troca de SSD.
+PC-03,Sala esquerda 02,180,1913,Desligado,192.168.0.13,TI003,Carlos Lima,Windows 11,16 GB,AMD Ryzen 3 3200G,Equipamento desligado para verificação de fonte.
+PC-04,Baias,1173,1257,Reserva,192.168.0.14,TI004,Sem usuário,Windows 11,16 GB,Intel Core i5-8500,Máquina reserva pronta para novo colaborador.
+PC-05,Baias,1381,1264,Ativo,192.168.0.15,TI005,Ana Costa,Windows 11,16 GB,Intel Core i5-10500,Perfil padrão administrativo configurado.
+PC-06,Baias,1565,1259,Ativo,192.168.0.16,TI006,Bruno Alves,Windows 11,32 GB,Intel Core i7-10700,Usado para planilhas pesadas e relatórios.
+PC-07,Baias,1772,1264,Ativo,192.168.0.17,TI007,Camila Rocha,Windows 11,16 GB,AMD Ryzen 5 5600G,Configuração revisada recentemente.
+PC-08,Baias,1963,1259,Ativo,192.168.0.18,TI008,Diego Martins,Windows 11,16 GB,Intel Core i5-11400,Sem pendências registradas.
+PC-09,Baias,2154,1259,Ativo,192.168.0.19,TI009,Elaine Castro,Windows 11,8 GB,Intel Core i3-10100,Recomendada expansão de memória.
+PC-10,Baias,2125,1345,Ativo,192.168.0.20,TI010,Felipe Ramos,Windows 11,16 GB,AMD Ryzen 5 4600G,Equipamento em uso normal.
+PC-11,Baias,1931,1340,Ativo,192.168.0.21,TI011,Gabriela Dias,Windows 11,16 GB,Intel Core i5-9500,Monitor secundário configurado.
+PC-12,Baias,1743,1347,Ativo,192.168.0.22,TI012,Henrique Melo,Windows 11,32 GB,Intel Core i7-11700,Máquina dedicada a rotinas de análise.
+PC-13,Baias,1535,1347,Ativo,192.168.0.23,TI013,Isabela Nunes,Windows 11,16 GB,AMD Ryzen 5 5500,Antivírus e backup ativos.
+PC-14,Baias,1344,1347,Ativo,192.168.0.24,TI014,João Silva,Windows 11,8 GB,Intel Core i3-8100,Avaliar upgrade de memória no próximo ciclo.
+PC-15,Baias,1139,1347,Ativo,192.168.0.25,TI015,Lucas Pereira,Windows 11,16 GB,Intel Core i5-10400F,Equipamento sem ocorrências.
