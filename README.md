@@ -8,14 +8,40 @@ O projeto permite localizar equipamentos diretamente na planta do escritório, c
 
 # ✨ Demonstração
 
-> Em breve disponível no Streamlit Cloud.
+> https://inventario-computadores-planta.streamlit.app/
 
 ---
 
-# 📷 Preview
+# 📷 Preview do Sistema
+
+O sistema utiliza uma planta baixa do escritório onde **cada computador foi geolocalizado manualmente através de coordenadas (X, Y)**. Dessa forma, cada equipamento é representado por um ponto interativo exatamente na sua posição física, permitindo localizar rapidamente qualquer máquina no ambiente.
 
 <p align="center">
-  <img src="assets/planta.png" width="900">
+  <img src="assets/preview.png" width="1000">
+</p>
+
+---
+
+### 🗺️ Geolocalização dos computadores
+
+Cada computador foi posicionado na planta utilizando coordenadas cartesianas (X, Y), criando um mapa interativo do ambiente.
+
+Esse processo envolveu:
+
+- 📍 Geolocalização manual de todos os computadores na planta;
+- 🎯 Associação das coordenadas de cada equipamento ao inventário;
+- 🖱️ Seleção direta do computador clicando sobre sua posição física;
+- 🎨 Identificação visual por cores conforme o status da máquina;
+- 🔄 Sincronização entre o mapa e os detalhes exibidos na lateral do sistema.
+
+Essa abordagem torna a localização dos equipamentos muito mais rápida do que consultar apenas uma lista tradicional de inventário.
+
+---
+
+### 🏢 Planta utilizada
+
+<p align="center">
+  <img src="assets/planta.png" width="850">
 </p>
 
 ---
