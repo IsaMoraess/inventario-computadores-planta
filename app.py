@@ -14,7 +14,12 @@ from PIL import Image, ImageDraw
 from streamlit_plotly_events import plotly_events
 
 BASE_DIR = Path(__file__).resolve().parent
+
 PLANTA_PATH = BASE_DIR / "assets" / "planta.png"
+# Planta real reconstruída pelo contorno do prédio.
+# Usar quando for trocar a base do sistema:
+# PLANTA_PATH = BASE_DIR / "assets" / "planta_real.png"
+
 CSV_PATH = BASE_DIR / "data" / "computadores.csv"
 BACKUP_DIR = BASE_DIR / "data" / "backups"
 MOVIMENTACOES_PATH = BASE_DIR / "data" / "movimentacoes.csv"
