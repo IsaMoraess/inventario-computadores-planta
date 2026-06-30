@@ -1,0 +1,60 @@
+data_hora,id,campo,valor_anterior,valor_novo,acao
+2026-06-30 13:18:45,ETJR01,sala,A definir,Reçepção,Edição
+2026-06-30 13:18:45,ETJR01,usuario,A coletar,Grazi,Edição
+2026-06-30 13:48:40,ETJR02,sala,A definir,Recepção,Edição
+2026-06-30 13:48:40,ETJR02,usuario,A coletar,Juliana,Edição
+2026-06-30 13:51:42,DJR01,sala,A definir,Diretoria,Edição
+2026-06-30 13:51:42,DJR01,usuario,A coletar,Junior,Edição
+2026-06-30 14:04:46,ETJR08,sala,A definir,Contabel/Fiscal,Edição
+2026-06-30 14:04:46,ETJR08,usuario,A coletar,Alane,Edição
+2026-06-30 14:10:24,ETJR10,sala,A definir,Contabel/Finaceiro,Edição
+2026-06-30 14:10:24,ETJR10,usuario,A coletar,Ninguem,Edição
+2026-06-30 14:14:32,ETJR07,sala,A definir,Contabel/Finaceiro,Edição
+2026-06-30 14:14:32,ETJR07,usuario,A coletar,Murilo,Edição
+2026-06-30 14:19:01,ETJR06,sala,A definir,Contabel/Finaceiro,Edição
+2026-06-30 14:19:01,ETJR06,usuario,A coletar,Rodrigo,Edição
+2026-06-30 14:22:33,ETJR05,sala,A definir,Contabel/Finaceiro,Edição
+2026-06-30 14:22:33,ETJR05,usuario,A coletar,Elizangela,Edição
+2026-06-30 14:28:14,ETJR04,sala,A definir,Contabel/financa,Edição
+2026-06-30 14:28:14,ETJR04,usuario,A coletar,Valdecir,Edição
+2026-06-30 15:43:28,ETJR015,sala,A definir,Estação de T.I,Edição
+2026-06-30 15:43:28,ETJR015,usuario,A coletar,Helloy,Edição
+2026-06-30 15:48:15,ETJR14,sala,A definir,Estação de T.I,Edição
+2026-06-30 15:48:15,ETJR14,usuario,A coletar,Ninguem,Edição
+2026-06-30 15:49:48,SUP01,sala,A definir,Estação T.I,Edição
+2026-06-30 15:49:48,SUP01,usuario,A coletar,Isabelly/Guirra,Edição
+2026-06-30 15:53:38,ETJR16,sala,A definir,Estação de T.I,Edição
+2026-06-30 15:53:38,ETJR16,usuario,A coletar,Jaqueline,Edição
+2026-06-30 15:55:13,ETJR13,sala,A definir,Estação T.I,Edição
+2026-06-30 16:03:15,ETJR12,sala,A definir,Estação de T.I,Edição
+2026-06-30 16:03:15,ETJR12,usuario,A coletar,Rute,Edição
+2026-06-30 16:22:23,EJR16,sala,A definir,Arquivos,Edição
+2026-06-30 16:22:23,EJR16,usuario,A coletar,Otaci,Edição
+2026-06-30 16:28:25,ETJR17,sala,A definir,Arquivos,Edição
+2026-06-30 16:28:25,ETJR17,usuario,A coletar,Otaci 2,Edição
+2026-06-30 16:30:57,ETJR22,sala,A definir,Legalização,Edição
+2026-06-30 16:32:48,ETJR19,usuario,A coletar,Gislaine,Edição
+2026-06-30 16:33:29,ETJR19,sala,A definir,Legalização,Edição
+2026-06-30 16:34:41,ETJR18,sala,A definir,Telecomunicação,Edição
+2026-06-30 16:36:33,ETJR18,sala,Telecomunicação,Legalização,Edição
+2026-06-30 16:36:33,ETJR18,usuario,A coletar,Thainara,Edição
+2026-06-30 16:46:39,ETJR09,sala,A definir,Contabel/Fiscal,Edição
+2026-06-30 16:46:39,ETJR09,usuario,A coletar,Camila,Edição
+2026-06-30 16:53:22,ETJR03,sala,A definir,Contabel/Finança,Edição
+2026-06-30 16:53:22,ETJR03,usuario,A coletar,Daniel,Edição
+2026-06-30 16:59:06,ETJR20,sala,A definir,Legalização,Edição
+2026-06-30 16:59:06,ETJR20,usuario,A coletar,Cleber,Edição
+2026-06-30 17:02:10,ETJR21,sala,A definir,Legalização,Edição
+2026-06-30 17:02:10,ETJR21,usuario,A coletar,Ingrid,Edição
+2026-06-30 17:03:04,ETJR23,sala,A definir,Legalização,Edição
+2026-06-30 17:04:56,ETJR25,sala,A definir,Juridico,Edição
+2026-06-30 17:04:56,ETJR25,usuario,A coletar,Carolina,Edição
+2026-06-30 17:06:56,ETJR26,sala,A definir,Juridico,Edição
+2026-06-30 17:06:56,ETJR26,usuario,A coletar,Carolina,Edição
+2026-06-30 17:09:10,ETJR24,sala,A definir,Markting,Edição
+2026-06-30 17:09:10,ETJR24,usuario,A coletar,Thomas,Edição
+2026-06-30 17:10:16,Valid 1,sala,A definir,Certificação,Edição
+2026-06-30 17:10:16,Valid 1,usuario,A coletar,Luana,Edição
+2026-06-30 17:10:59,Valid 2,sala,A definir,Certificação,Edição
+2026-06-30 17:10:59,Valid 2,usuario,A coletar,Luana,Edição
+2026-06-30 17:12:46,Valid 3,sala,A definir,Certificação,Edição

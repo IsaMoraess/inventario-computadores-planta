@@ -1,6 +1,7 @@
 from pathlib import Path
 from datetime import datetime
 from io import BytesIO
+import re
 from shutil import copy2
 from textwrap import shorten
 from unicodedata import normalize
@@ -15,10 +16,11 @@ from streamlit_plotly_events import plotly_events
 
 BASE_DIR = Path(__file__).resolve().parent
 
-PLANTA_PATH = BASE_DIR / "assets" / "planta.png"
+# PLANTA_PATH = BASE_DIR / "assets" / "planta.png"
+
 # Planta real reconstruída pelo contorno do prédio.
 # Usar quando for trocar a base do sistema:
-# PLANTA_PATH = BASE_DIR / "assets" / "planta_real.png"
+PLANTA_PATH = BASE_DIR / "assets" / "planta_real.png"
 
 CSV_PATH = BASE_DIR / "data" / "computadores.csv"
 BACKUP_DIR = BASE_DIR / "data" / "backups"
@@ -30,8 +32,8 @@ CAMPOS_CSV = [
     "x",
     "y",
     "status",
-    "ip",
-    "patrimonio",
+    "armazenamento",
+    "placa_video",
     "usuario",
     "sistema",
     "ram",
@@ -47,7 +49,7 @@ CAMPOS_MOVIMENTACAO = [
     "acao",
 ]
 CAMPOS_MOVIMENTACAO_MONITORADOS = ["sala", "usuario", "x", "y"]
-SISTEMAS_ANTIGOS = ["Windows 7", "Windows 8", "Windows 8.1", "Windows 10"]
+SISTEMAS_ANTIGOS = ["Windows 7", "Windows 8", "Windows 8.1"]
 PALAVRAS_CRITICAS = ["urgente", "critico", "crítico", "falha", "troca", "fonte", "defeito"]
 
 st.set_page_config(page_title="Gestão de Ativos de TI", layout="wide")
@@ -189,12 +191,38 @@ def criar_backup_csv():
 
 def salvar_com_backup(dados):
     criar_backup_csv()
-    dados = dados.reindex(columns=CAMPOS_CSV)
+    dados = normalizar_dataframe(dados)
     dados.to_csv(CSV_PATH, index=False)
 
 
 def normalizar_dataframe(dados):
     dados = dados.copy()
+
+    colunas_armazenamento = {"ip", "Armazenamento", "armazenamento"}
+    if "processamento" in dados.columns and not colunas_armazenamento.intersection(dados.columns):
+        if "placa de vídeo" in dados.columns:
+            dados["armazenamento"] = dados["placa de vídeo"]
+        elif "placa de vÃ­deo" in dados.columns:
+            dados["armazenamento"] = dados["placa de vÃ­deo"]
+
+        dados["placa_video"] = dados["processamento"]
+
+    aliases = {
+        "ip": "armazenamento",
+        "Armazenamento": "armazenamento",
+        "patrimonio": "placa_video",
+        "placa de vídeo": "placa_video",
+        "placa de vÃ­deo": "placa_video",
+        "processamento": "placa_video",
+    }
+
+    for coluna_antiga, coluna_nova in aliases.items():
+        if coluna_antiga in dados.columns:
+            if coluna_nova not in dados.columns:
+                dados[coluna_nova] = ""
+
+            mascara_vazia = dados[coluna_nova].fillna("").astype(str).str.strip() == ""
+            dados.loc[mascara_vazia, coluna_nova] = dados.loc[mascara_vazia, coluna_antiga]
 
     for coluna in CAMPOS_CSV:
         if coluna not in dados.columns:
@@ -212,6 +240,40 @@ def valor_limpo(valor):
     return str(valor).strip()
 
 
+def texto_normalizado(valor):
+    return normalize("NFKD", valor_limpo(valor)).encode("ascii", "ignore").decode("ascii").lower()
+
+
+def valor_nao_informado(valor):
+    return texto_normalizado(valor) in {"", "a coletar", "nao informado", "sem informacao"}
+
+
+def pouca_ram(valor):
+    if valor_nao_informado(valor):
+        return False
+
+    texto = texto_normalizado(valor).replace(",", ".")
+    encontrado = re.search(r"\d+(?:\.\d+)?", texto)
+
+    if not encontrado:
+        return False
+
+    quantidade = float(encontrado.group())
+
+    if "mb" in texto:
+        quantidade = quantidade / 1024
+
+    return quantidade <= 4
+
+
+def sistema_antigo(valor):
+    if valor_nao_informado(valor):
+        return False
+
+    sistema = texto_normalizado(valor)
+    return sistema in {texto_normalizado(item) for item in SISTEMAS_ANTIGOS}
+
+
 def texto_pdf(valor):
     texto = normalize("NFKD", str(valor)).encode("ascii", "ignore").decode("ascii")
     return texto
@@ -220,8 +282,6 @@ def texto_pdf(valor):
 def validar_registro(registro, dados_base, id_original=None):
     erros = []
     computador_id = valor_limpo(registro.get("id", ""))
-    ip = valor_limpo(registro.get("ip", ""))
-    patrimonio = valor_limpo(registro.get("patrimonio", ""))
     status = valor_limpo(registro.get("status", ""))
 
     if not computador_id:
@@ -252,12 +312,6 @@ def validar_registro(registro, dados_base, id_original=None):
 
     if computador_id and computador_id in comparacao["id"].astype(str).tolist():
         erros.append("Já existe um computador com esse nome.")
-
-    if ip and ip in comparacao["ip"].astype(str).tolist():
-        erros.append("Já existe um computador com esse IP.")
-
-    if patrimonio and patrimonio in comparacao["patrimonio"].astype(str).tolist():
-        erros.append("Já existe um computador com esse patrimônio.")
 
     return erros
 
@@ -308,10 +362,10 @@ def motivos_alerta(item):
     if not usuario or usuario.lower() == "sem usuário":
         motivos.append("sem usuário")
 
-    if ram.startswith("8 gb") or ram.startswith("4 gb"):
+    if pouca_ram(ram):
         motivos.append("pouca RAM")
 
-    if sistema in SISTEMAS_ANTIGOS:
+    if sistema_antigo(sistema):
         motivos.append("sistema antigo")
 
     if any(palavra in observacoes.lower() for palavra in PALAVRAS_CRITICAS):
@@ -372,7 +426,7 @@ def relatorio_pdf(imagem, dados, alertas, paleta, computador_selecionado):
     for _, item in dados.iterrows():
         linha = (
             f"{item['id']} | {item['status']} | {item['sala']} | "
-            f"{item['usuario']} | {item['ip']} | {item['patrimonio']}"
+            f"{item['usuario']} | {item['armazenamento']} | {item['placa_video']}"
         )
         desenho.text((70, y), texto_pdf(shorten(linha, width=150)), fill=(17, 24, 39))
         y += 26
@@ -470,8 +524,8 @@ with st.sidebar:
         default=list(cores.keys()),
     )
     termo_busca = st.text_input(
-        "Buscar por usuário, IP ou patrimônio",
-        placeholder="Ex.: João, 192.168.0.11, TI001",
+        "Buscar por nome, usuário, armazenamento ou placa de vídeo",
+        placeholder="Ex.: PC-01, João, 256 GB, RTX",
     ).strip()
 
     df_visual = df[df["status"].isin(status_filtrados)] if status_filtrados else df.copy()
@@ -481,8 +535,8 @@ with st.sidebar:
         busca = (
             df_visual["id"].astype(str).str.lower().str.contains(termo, na=False)
             | df_visual["usuario"].astype(str).str.lower().str.contains(termo, na=False)
-            | df_visual["ip"].astype(str).str.lower().str.contains(termo, na=False)
-            | df_visual["patrimonio"].astype(str).str.lower().str.contains(termo, na=False)
+            | df_visual["armazenamento"].astype(str).str.lower().str.contains(termo, na=False)
+            | df_visual["placa_video"].astype(str).str.lower().str.contains(termo, na=False)
         )
         df_visual = df_visual[busca]
 
@@ -536,11 +590,11 @@ with st.sidebar:
         + detalhe_linha("Status", f"{icones.get(status_atual, '⚪')} {status_atual}")
         + detalhe_linha("Sala", computador["sala"])
         + detalhe_linha("Usuário", computador["usuario"])
-        + detalhe_linha("Patrimônio", computador["patrimonio"])
-        + detalhe_linha("IP", computador["ip"])
+        + detalhe_linha("Placa de Vídeo", computador["placa_video"])
+        + detalhe_linha("Armazenamento", computador["armazenamento"])
         + detalhe_linha("Sistema", computador["sistema"])
-        + detalhe_linha("RAM", texto("ram"))
-        + detalhe_linha("CPU", texto("processador"))
+        + detalhe_linha("Memória RAM", texto("ram"))
+        + detalhe_linha("Processador", texto("processador"))
         + detalhe_linha("Obs.", texto("observacoes"))
         + "</div>",
         unsafe_allow_html=True,
@@ -561,16 +615,16 @@ with st.sidebar:
                 )
                 nova_sala = st.text_input("Sala", value=str(computador["sala"]))
                 novo_usuario = st.text_input("Usuário", value=str(computador["usuario"]))
-                novo_patrimonio = st.text_input(
-                    "Patrimônio",
-                    value=str(computador["patrimonio"]),
+                nova_placa_video = st.text_input(
+                    "Placa de Vídeo",
+                    value=str(computador["placa_video"]),
                 )
-                novo_ip = st.text_input("IP", value=str(computador["ip"]))
+                novo_armazenamento = st.text_input("Armazenamento", value=str(computador["armazenamento"]))
                 novo_sistema = st.text_input(
                     "Sistema operacional",
                     value=str(computador["sistema"]),
                 )
-                nova_ram = st.text_input("RAM", value=str(computador["ram"]))
+                nova_ram = st.text_input("Memória RAM", value=str(computador["ram"]))
                 novo_processador = st.text_input(
                     "Processador",
                     value=str(computador["processador"]),
@@ -608,8 +662,8 @@ with st.sidebar:
                     "x": int(novo_x),
                     "y": int(novo_y),
                     "status": novo_status,
-                    "ip": novo_ip.strip(),
-                    "patrimonio": novo_patrimonio.strip(),
+                    "armazenamento": novo_armazenamento.strip(),
+                    "placa_video": nova_placa_video.strip(),
                     "usuario": novo_usuario.strip(),
                     "sistema": novo_sistema.strip(),
                     "ram": nova_ram.strip(),
@@ -716,13 +770,13 @@ with st.sidebar:
                 cadastro_status = st.selectbox("Status", list(cores.keys()))
                 cadastro_sala = st.text_input("Sala")
                 cadastro_usuario = st.text_input("Usuário")
-                cadastro_patrimonio = st.text_input("Patrimônio")
-                cadastro_ip = st.text_input("IP")
+                cadastro_placa_video = st.text_input("Placa de Vídeo")
+                cadastro_armazenamento = st.text_input("Armazenamento")
                 cadastro_sistema = st.text_input(
                     "Sistema operacional",
                     value="Windows 11",
                 )
-                cadastro_ram = st.text_input("RAM", value="16 GB")
+                cadastro_ram = st.text_input("Memória RAM", value="16 GB")
                 cadastro_processador = st.text_input("Processador")
                 cadastro_observacoes = st.text_area("Observações")
                 cadastro_x = st.number_input(
@@ -760,8 +814,8 @@ with st.sidebar:
                     "x": int(cadastro_x),
                     "y": int(cadastro_y),
                     "status": cadastro_status,
-                    "ip": cadastro_ip.strip(),
-                    "patrimonio": cadastro_patrimonio.strip(),
+                    "armazenamento": cadastro_armazenamento.strip(),
+                    "placa_video": cadastro_placa_video.strip(),
                     "usuario": cadastro_usuario.strip(),
                     "sistema": cadastro_sistema.strip(),
                     "ram": cadastro_ram.strip(),
@@ -928,13 +982,13 @@ for status in ["Ativo", "Desligado", "Manutenção", "Reserva"]:
                 line=dict(color="white", width=2),
             ),
             customdata=grupo[
-                ["id", "sala", "ip", "patrimonio", "status", "usuario", "sistema"]
+                ["id", "sala", "armazenamento", "placa_video", "status", "usuario", "sistema"]
             ].values.tolist(),
             hovertemplate=(
                 "<b>%{customdata[0]}</b><br>"
                 "Sala: %{customdata[1]}<br>"
-                "IP: %{customdata[2]}<br>"
-                "Patrimônio: %{customdata[3]}<br>"
+                "Armazenamento: %{customdata[2]}<br>"
+                "Placa de Vídeo: %{customdata[3]}<br>"
                 "Status: %{customdata[4]}"
                 "<extra></extra>"
             ),

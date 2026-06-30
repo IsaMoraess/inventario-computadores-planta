@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 from PIL import Image
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-PLANTA_PATH = BASE_DIR / "assets" / "planta.png"
+PLANTA_PATH = BASE_DIR / "assets" / "planta_real.png"
 
 img = Image.open(PLANTA_PATH)
 

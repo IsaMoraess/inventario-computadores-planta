@@ -75,8 +75,8 @@ Cada computador possui informações como:
 * Status
 * Sala
 * Usuário
-* Patrimônio
-* Endereço IP
+* Placa de Vídeo
+* Armazenamento
 * Sistema Operacional
 * Memória RAM
 * Processador
@@ -101,8 +101,8 @@ Pesquisa por:
 
 * Nome do computador
 * Usuário
-* Patrimônio
-* Endereço IP
+* Placa de Vídeo
+* Armazenamento
 
 ---
 
@@ -137,8 +137,8 @@ Permite editar:
 * nome;
 * sala;
 * usuário;
-* patrimônio;
-* IP;
+* placa de vídeo;
+* armazenamento;
 * sistema operacional;
 * RAM;
 * processador;
@@ -157,8 +157,8 @@ As alterações são gravadas diretamente no arquivo CSV.
 * identificação;
 * localização;
 * usuário;
-* patrimônio;
-* IP;
+* placa de vídeo;
+* armazenamento;
 * status;
 * coordenadas X e Y na planta.
 
@@ -322,7 +322,7 @@ http://localhost:8501
 * Integração com Active Directory
 * Ping automático dos equipamentos
 * Inventário automático via rede
-* QR Code para patrimônio
+* QR Code para placa de vídeo
 * Histórico completo de alterações
 
 ---

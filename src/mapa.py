@@ -7,7 +7,7 @@ from PIL import Image
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-PLANTA_PATH = BASE_DIR / "assets" / "planta.png"
+PLANTA_PATH = BASE_DIR / "assets" / "planta_real.png"
 CSV_PATH = BASE_DIR / "data" / "computadores.csv"
 OUTPUT_PATH = BASE_DIR / "output" / "mapa_computadores.html"
 
@@ -51,12 +51,12 @@ for status, grupo in df.groupby("status"):
                 color=cores.get(status, "#616161"),
                 line=dict(color="white", width=1.5),
             ),
-            customdata=grupo[["id", "sala", "ip", "patrimonio", "status"]],
+            customdata=grupo[["id", "sala", "Armazenamento", "patrimonio", "status"]],
             hovertemplate=(
                 "<b>%{customdata[0]}</b><br>"
                 "Sala: %{customdata[1]}<br>"
-                "IP: %{customdata[2]}<br>"
-                "Patrimônio: %{customdata[3]}<br>"
+                "Armazenamento: %{customdata[2]}<br>"
+                "Placa de Vídeo: %{customdata[3]}<br>"
                 "Status: %{customdata[4]}"
                 "<extra></extra>"
             ),
