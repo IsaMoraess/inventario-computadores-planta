@@ -1,10 +1,12 @@
 from pathlib import Path
 from datetime import datetime
 from io import BytesIO
+import base64
 import re
 from shutil import copy2
 from textwrap import shorten
 from unicodedata import normalize
+from urllib.parse import quote
 from zipfile import ZIP_DEFLATED, ZipFile
 from xml.sax.saxutils import escape
 
@@ -12,7 +14,31 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 from PIL import Image, ImageDraw
+from reportlab.graphics.charts.barcharts import HorizontalBarChart, VerticalBarChart
+from reportlab.graphics.charts.piecharts import Pie
+from reportlab.graphics.shapes import Drawing, String
+from reportlab.lib import colors as rl_colors
+from reportlab.lib.enums import TA_CENTER
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+from reportlab.lib.units import cm
+from reportlab.pdfgen import canvas
+from reportlab.platypus import (
+    Image as RLImage,
+    PageBreak,
+    Paragraph,
+    SimpleDocTemplate,
+    Spacer,
+    Table,
+    TableStyle,
+)
+from streamlit_image_coordinates import streamlit_image_coordinates
 from streamlit_plotly_events import plotly_events
+
+try:
+    import qrcode
+except ImportError:
+    qrcode = None
 
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -21,6 +47,7 @@ BASE_DIR = Path(__file__).resolve().parent
 # Planta real reconstruída pelo contorno do prédio.
 # Usar quando for trocar a base do sistema:
 PLANTA_PATH = BASE_DIR / "assets" / "planta_real.png"
+LOGO_PATH = BASE_DIR / "assets" / "logo_jr.png"
 
 CSV_PATH = BASE_DIR / "data" / "computadores.csv"
 BACKUP_DIR = BASE_DIR / "data" / "backups"
@@ -48,7 +75,19 @@ CAMPOS_MOVIMENTACAO = [
     "valor_novo",
     "acao",
 ]
-CAMPOS_MOVIMENTACAO_MONITORADOS = ["sala", "usuario", "x", "y"]
+CAMPOS_MOVIMENTACAO_MONITORADOS = [
+    "status",
+    "armazenamento",
+    "placa_video",
+    "sistema",
+    "ram",
+    "processador",
+    "observacoes",
+    "sala",
+    "usuario",
+    "x",
+    "y",
+]
 SISTEMAS_ANTIGOS = ["Windows 7", "Windows 8", "Windows 8.1"]
 PALAVRAS_CRITICAS = ["urgente", "critico", "crítico", "falha", "troca", "fonte", "defeito"]
 
@@ -266,12 +305,117 @@ def pouca_ram(valor):
     return quantidade <= 4
 
 
+def ram_em_gb(valor):
+    texto = texto_normalizado(valor).replace(",", ".")
+    encontrado = re.search(r"\d+(?:\.\d+)?", texto)
+
+    if not encontrado:
+        return None
+
+    quantidade = float(encontrado.group())
+
+    if "mb" in texto:
+        quantidade = quantidade / 1024
+
+    return quantidade
+
+
 def sistema_antigo(valor):
     if valor_nao_informado(valor):
         return False
 
     sistema = texto_normalizado(valor)
     return sistema in {texto_normalizado(item) for item in SISTEMAS_ANTIGOS}
+
+
+def url_computador(computador_id):
+    base_url = st.session_state.get("app_base_url", "http://localhost:8503")
+    return f"{base_url.rstrip('/')}?pc={quote(str(computador_id))}"
+
+
+def qr_code_png(conteudo):
+    if qrcode is None:
+        return None
+
+    qr = qrcode.QRCode(version=1, box_size=8, border=3)
+    qr.add_data(conteudo)
+    qr.make(fit=True)
+    imagem_qr = qr.make_image(fill_color="black", back_color="white").convert("RGB")
+    arquivo = BytesIO()
+    imagem_qr.save(arquivo, format="PNG")
+    return arquivo.getvalue()
+
+
+def computador_clicado(selected_points, ids_por_trace, dados):
+    if not selected_points:
+        return None
+
+    for ponto in selected_points:
+        numero_trace = ponto.get("curveNumber")
+        numero_ponto = ponto.get("pointNumber")
+
+        if numero_trace is not None:
+            numero_trace = int(numero_trace)
+
+        if numero_ponto is not None:
+            numero_ponto = int(numero_ponto)
+
+        ids_do_trace = ids_por_trace.get(numero_trace, [])
+
+        if numero_ponto is not None and numero_ponto < len(ids_do_trace):
+            return ids_do_trace[numero_ponto]
+
+    ponto = selected_points[0]
+    ponto_x = ponto.get("x")
+    ponto_y = ponto.get("y")
+    computador_encontrado = dados[(dados["x"] == ponto_x) & (dados["y"] == ponto_y)]
+
+    if not computador_encontrado.empty:
+        return computador_encontrado.iloc[0]["id"]
+
+    return None
+
+
+def coordenadas_clicadas(selected_points):
+    if not selected_points:
+        return None
+
+    ponto = selected_points[0]
+
+    if ponto.get("x") is None or ponto.get("y") is None:
+        return None
+
+    return int(round(float(ponto["x"]))), int(round(float(ponto["y"])))
+
+
+def salvar_posicao_computador(dados, computador_id, novo_x, novo_y):
+    mascara_computador = dados["id"] == computador_id
+
+    if not mascara_computador.any():
+        return dados, False
+
+    registro_antigo = dados.loc[mascara_computador].iloc[0].to_dict()
+    x_antigo = registro_antigo.get("x", "")
+    y_antigo = registro_antigo.get("y", "")
+    print("ANTES:", x_antigo, y_antigo)
+    print("DEPOIS:", novo_x, novo_y)
+
+    dados.loc[mascara_computador, "x"] = novo_x
+    dados.loc[mascara_computador, "y"] = novo_y
+    registro_novo = dados.loc[mascara_computador].iloc[0].to_dict()
+
+    registrar_movimentacoes(registro_antigo, registro_novo, "Posicionamento")
+    criar_backup_csv()
+    dados = normalizar_dataframe(dados)
+    dados.loc[dados["id"] == computador_id, "x"] = novo_x
+    dados.loc[dados["id"] == computador_id, "y"] = novo_y
+    dados.to_csv(CSV_PATH, index=False)
+
+    confirmacao = normalizar_dataframe(pd.read_csv(CSV_PATH))
+    linha = confirmacao[confirmacao["id"] == computador_id].iloc[0]
+    print("CSV:", linha["x"], linha["y"])
+    salvou = int(linha["x"]) == int(novo_x) and int(linha["y"]) == int(novo_y)
+    return dados, salvou
 
 
 def texto_pdf(valor):
@@ -380,59 +524,468 @@ def dados_com_alertas(dados):
     return dados[dados["motivos_alerta"].map(bool)]
 
 
+class RodapeCanvas(canvas.Canvas):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._paginas_salvas = []
+
+    def showPage(self):
+        self._paginas_salvas.append(dict(self.__dict__))
+        self._startPage()
+
+    def save(self):
+        total_paginas = len(self._paginas_salvas)
+
+        for pagina in self._paginas_salvas:
+            self.__dict__.update(pagina)
+            self.desenhar_rodape(total_paginas)
+            super().showPage()
+
+        super().save()
+
+    def desenhar_rodape(self, total_paginas):
+        largura, _ = A4
+        texto_data = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self.setStrokeColor(rl_colors.HexColor("#CBD5E1"))
+        self.line(1.6 * cm, 1.25 * cm, largura - 1.6 * cm, 1.25 * cm)
+        self.setFillColor(rl_colors.HexColor("#475569"))
+        self.setFont("Helvetica", 8)
+        self.drawString(1.6 * cm, 0.8 * cm, "Sistema de Inventário de Computadores")
+        self.drawCentredString(largura / 2, 0.8 * cm, f"Página {self._pageNumber} de {total_paginas}")
+        self.drawRightString(largura - 1.6 * cm, 0.8 * cm, texto_data)
+
+
+def paragrafo_pdf(texto, estilo):
+    return Paragraph(escape(str(texto)), estilo)
+
+
+def imagem_logo_relatorio():
+    return LOGO_PATH if LOGO_PATH.exists() else None
+
+
+def logo_html_dashboard():
+    if not LOGO_PATH.exists():
+        return ""
+
+    conteudo = base64.b64encode(LOGO_PATH.read_bytes()).decode("ascii")
+    return (
+        '<img src="data:image/png;base64,'
+        f'{conteudo}" '
+        'style="width: 260px; max-width: 100%; margin-bottom: 16px;" '
+        'alt="Logo JR">'
+    )
+
+
+def cor_reportlab(hex_cor):
+    return rl_colors.HexColor(hex_cor)
+
+
+def card_pdf(titulo, valor, cor, estilos):
+    tabela = Table(
+        [
+            [paragrafo_pdf(titulo, estilos["CardTitulo"])],
+            [paragrafo_pdf(valor, estilos["CardValor"])],
+        ],
+        colWidths=[5.2 * cm],
+        rowHeights=[0.75 * cm, 1.05 * cm],
+    )
+    tabela.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, -1), rl_colors.white),
+                ("BOX", (0, 0), (-1, -1), 0.8, cor_reportlab("#CBD5E1")),
+                ("LINEBEFORE", (0, 0), (0, -1), 4, cor),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 10),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 10),
+                ("TOPPADDING", (0, 0), (-1, -1), 6),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+            ]
+        )
+    )
+    return tabela
+
+
+def grafico_barras_status_pdf(dados, paleta):
+    contagem = dados["status"].value_counts()
+    labels = contagem.index.astype(str).tolist()
+    valores = [int(valor) for valor in contagem.tolist()]
+    desenho = Drawing(460, 230)
+    grafico = VerticalBarChart()
+    grafico.x = 40
+    grafico.y = 35
+    grafico.height = 145
+    grafico.width = 370
+    grafico.data = [valores or [0]]
+    grafico.categoryAxis.categoryNames = labels or ["Sem dados"]
+    grafico.categoryAxis.labels.boxAnchor = "ne"
+    grafico.categoryAxis.labels.angle = 30
+    grafico.valueAxis.valueMin = 0
+    grafico.valueAxis.valueMax = max(valores or [1]) + 1
+    grafico.valueAxis.valueStep = max(1, round(grafico.valueAxis.valueMax / 4))
+    grafico.bars[0].fillColor = cor_reportlab("#1976D2")
+    desenho.add(String(40, 205, "Computadores por status", fontSize=11, fillColor=cor_reportlab("#0F172A")))
+    desenho.add(grafico)
+    return desenho
+
+
+def grafico_barras_sala_pdf(dados):
+    contagem = dados["sala"].value_counts().head(8)
+    labels = contagem.index.astype(str).tolist()
+    valores = [int(valor) for valor in contagem.tolist()]
+    desenho = Drawing(460, 240)
+    grafico = HorizontalBarChart()
+    grafico.x = 130
+    grafico.y = 35
+    grafico.height = 155
+    grafico.width = 280
+    grafico.data = [valores or [0]]
+    grafico.categoryAxis.categoryNames = labels or ["Sem dados"]
+    grafico.categoryAxis.labels.fontSize = 7
+    grafico.valueAxis.valueMin = 0
+    grafico.valueAxis.valueMax = max(valores or [1]) + 1
+    grafico.valueAxis.valueStep = max(1, round(grafico.valueAxis.valueMax / 4))
+    grafico.bars[0].fillColor = cor_reportlab("#2563EB")
+    desenho.add(String(40, 215, "Top salas por quantidade", fontSize=11, fillColor=cor_reportlab("#0F172A")))
+    desenho.add(grafico)
+    return desenho
+
+
+def grafico_windows_pdf(dados):
+    windows_10 = int((dados["sistema"].astype(str).str.lower() == "windows 10").sum())
+    windows_11 = int((dados["sistema"].astype(str).str.lower() == "windows 11").sum())
+    desenho = Drawing(460, 220)
+    pizza = Pie()
+    pizza.x = 135
+    pizza.y = 45
+    pizza.width = 130
+    pizza.height = 130
+    pizza.data = [windows_10, windows_11] if windows_10 or windows_11 else [1]
+    pizza.labels = ["Windows 10", "Windows 11"] if windows_10 or windows_11 else ["Sem dados"]
+    pizza.slices[0].fillColor = cor_reportlab("#60A5FA")
+    if len(pizza.data) > 1:
+        pizza.slices[1].fillColor = cor_reportlab("#22C55E")
+    desenho.add(String(40, 195, "Windows 10 x Windows 11", fontSize=11, fillColor=cor_reportlab("#0F172A")))
+    desenho.add(pizza)
+    return desenho
+
+
+def tabela_pdf(cabecalhos, linhas, col_widths, estilos, fonte=7):
+    dados_tabela = [[paragrafo_pdf(cabecalho, estilos["TabelaCabecalho"]) for cabecalho in cabecalhos]]
+
+    for linha in linhas:
+        dados_tabela.append([paragrafo_pdf(valor, estilos["TabelaCelula"]) for valor in linha])
+
+    tabela = Table(dados_tabela, colWidths=col_widths, repeatRows=1)
+    estilos_tabela = [
+        ("BACKGROUND", (0, 0), (-1, 0), cor_reportlab("#0F172A")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), rl_colors.white),
+        ("ALIGN", (0, 0), (-1, 0), "CENTER"),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("GRID", (0, 0), (-1, -1), 0.25, cor_reportlab("#CBD5E1")),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), fonte),
+        ("LEFTPADDING", (0, 0), (-1, -1), 5),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+        ("TOPPADDING", (0, 0), (-1, -1), 5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+    ]
+
+    for indice in range(1, len(dados_tabela)):
+        cor_linha = "#F8FAFC" if indice % 2 == 0 else "#FFFFFF"
+        estilos_tabela.append(("BACKGROUND", (0, indice), (-1, indice), cor_reportlab(cor_linha)))
+
+    tabela.setStyle(TableStyle(estilos_tabela))
+    return tabela
+
+
 def relatorio_pdf(imagem, dados, alertas, paleta, computador_selecionado):
+    arquivo = BytesIO()
+    data_geracao = agora_texto()
+    doc = SimpleDocTemplate(
+        arquivo,
+        pagesize=A4,
+        rightMargin=1.6 * cm,
+        leftMargin=1.6 * cm,
+        topMargin=1.6 * cm,
+        bottomMargin=1.8 * cm,
+        title="Relatório de Inventário de Computadores",
+    )
+    estilos_base = getSampleStyleSheet()
+    estilos = {
+        "TituloCapa": ParagraphStyle(
+            "TituloCapa",
+            parent=estilos_base["Title"],
+            fontName="Helvetica-Bold",
+            fontSize=28,
+            leading=34,
+            alignment=TA_CENTER,
+            textColor=cor_reportlab("#0F172A"),
+            spaceAfter=14,
+        ),
+    "Subtitulo": ParagraphStyle(
+        "Subtitulo",
+        parent=estilos_base["Heading2"],
+            fontName="Helvetica",
+            fontSize=15,
+            leading=20,
+            alignment=TA_CENTER,
+            textColor=cor_reportlab("#334155"),
+        spaceAfter=24,
+    ),
+        "MarcaCapa": ParagraphStyle(
+            "MarcaCapa",
+            parent=estilos_base["Heading2"],
+            fontName="Helvetica-Bold",
+            fontSize=18,
+            leading=24,
+            alignment=TA_CENTER,
+            textColor=cor_reportlab("#0F172A"),
+            spaceAfter=10,
+        ),
+        "Secao": ParagraphStyle(
+            "Secao",
+            parent=estilos_base["Heading1"],
+            fontName="Helvetica-Bold",
+            fontSize=18,
+            leading=24,
+            textColor=cor_reportlab("#0F172A"),
+            spaceAfter=14,
+        ),
+        "Texto": ParagraphStyle(
+            "Texto",
+            parent=estilos_base["BodyText"],
+            fontName="Helvetica",
+            fontSize=10,
+            leading=14,
+            textColor=cor_reportlab("#334155"),
+            spaceAfter=8,
+        ),
+        "CardTitulo": ParagraphStyle(
+            "CardTitulo",
+            parent=estilos_base["BodyText"],
+            fontSize=8,
+            leading=10,
+            textColor=cor_reportlab("#64748B"),
+        ),
+        "CardValor": ParagraphStyle(
+            "CardValor",
+            parent=estilos_base["BodyText"],
+            fontName="Helvetica-Bold",
+            fontSize=18,
+            leading=22,
+            textColor=cor_reportlab("#0F172A"),
+        ),
+        "TabelaCabecalho": ParagraphStyle(
+            "TabelaCabecalho",
+            parent=estilos_base["BodyText"],
+            fontName="Helvetica-Bold",
+            fontSize=7.5,
+            leading=9,
+            alignment=TA_CENTER,
+            textColor=rl_colors.white,
+        ),
+        "TabelaCelula": ParagraphStyle(
+            "TabelaCelula",
+            parent=estilos_base["BodyText"],
+            fontSize=7,
+            leading=9,
+            textColor=cor_reportlab("#0F172A"),
+        ),
+        "AlertaTitulo": ParagraphStyle(
+            "AlertaTitulo",
+            parent=estilos_base["BodyText"],
+            fontName="Helvetica-Bold",
+            fontSize=11,
+            leading=14,
+            textColor=cor_reportlab("#0F172A"),
+        ),
+    }
+
+    historia = []
+    total = len(dados)
+    total_ativos = int((dados["status"] == "Ativo").sum())
+    total_manutencao = int((dados["status"] == "Manutenção").sum())
+    total_desligados = int((dados["status"] == "Desligado").sum())
+    total_reserva = int((dados["status"] == "Reserva").sum())
+    total_alertas = len(alertas)
+    total_salas = dados["sala"].replace("", "Não informado").nunique()
+
+    logo = imagem_logo_relatorio()
+    if logo:
+        logo_pdf = RLImage(str(logo), width=4 * cm, height=4 * cm, kind="proportional")
+        logo_pdf.hAlign = "CENTER"
+        historia.append(logo_pdf)
+        historia.append(Spacer(1, 0.7 * cm))
+    else:
+        historia.append(Spacer(1, 2.8 * cm))
+
+    historia.append(paragrafo_pdf("JR Grupo", estilos["MarcaCapa"]))
+    historia.append(paragrafo_pdf("GESTÃO DE ATIVOS DE TI", estilos["TituloCapa"]))
+    historia.append(paragrafo_pdf("Relatório de Inventário de Computadores", estilos["Subtitulo"]))
+    historia.append(Spacer(1, 1.1 * cm))
+    capa_info = Table(
+        [
+            ["Empresa", "JR Serviços Empresariais"],
+            ["Data de geração", data_geracao],
+            ["Total de computadores", str(total)],
+        ],
+        colWidths=[5.2 * cm, 9.5 * cm],
+    )
+    capa_info.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (0, -1), cor_reportlab("#E2E8F0")),
+                ("TEXTCOLOR", (0, 0), (-1, -1), cor_reportlab("#0F172A")),
+                ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
+                ("BOX", (0, 0), (-1, -1), 0.6, cor_reportlab("#CBD5E1")),
+                ("INNERGRID", (0, 0), (-1, -1), 0.4, cor_reportlab("#CBD5E1")),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("ROWBACKGROUNDS", (1, 0), (1, -1), [rl_colors.white, cor_reportlab("#F8FAFC")]),
+                ("LEFTPADDING", (0, 0), (-1, -1), 10),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 10),
+                ("TOPPADDING", (0, 0), (-1, -1), 8),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+            ]
+        )
+    )
+    historia.append(capa_info)
+    historia.append(Spacer(1, 6.2 * cm))
+    historia.append(paragrafo_pdf("Sistema desenvolvido em Python + Streamlit", estilos["Subtitulo"]))
+    historia.append(PageBreak())
+
+    historia.append(paragrafo_pdf("Resumo Executivo", estilos["Secao"]))
+    cards = [
+        card_pdf("Total de computadores", total, cor_reportlab("#2563EB"), estilos),
+        card_pdf("Ativos", total_ativos, cor_reportlab("#16A34A"), estilos),
+        card_pdf("Manutenção", total_manutencao, cor_reportlab("#F97316"), estilos),
+        card_pdf("Desligados", total_desligados, cor_reportlab("#DC2626"), estilos),
+        card_pdf("Reserva", total_reserva, cor_reportlab("#1976D2"), estilos),
+        card_pdf("Alertas", total_alertas, cor_reportlab("#EAB308"), estilos),
+    ]
+    historia.append(Table([cards[:3], cards[3:]], colWidths=[5.5 * cm, 5.5 * cm, 5.5 * cm], hAlign="LEFT"))
+    historia.append(Spacer(1, 0.5 * cm))
+    historia.append(grafico_barras_status_pdf(dados, paleta))
+    historia.append(Spacer(1, 0.25 * cm))
+    historia.append(grafico_barras_sala_pdf(dados))
+    historia.append(Spacer(1, 0.25 * cm))
+    historia.append(grafico_windows_pdf(dados))
+    resumo_textual = (
+        f"Foram encontrados {total} computadores distribuídos em {total_salas} setores. "
+        f"A maioria encontra-se ativa. Existem {total_alertas} equipamentos que necessitam atenção."
+    )
+    historia.append(paragrafo_pdf(resumo_textual, estilos["Texto"]))
+    historia.append(PageBreak())
+
+    historia.append(paragrafo_pdf("Localização dos Computadores", estilos["Secao"]))
     planta_relatorio = planta_para_jpg(imagem, dados, computador_selecionado, paleta)
     planta_img = Image.open(BytesIO(planta_relatorio)).convert("RGB")
-    largura = 1600
-    planta_altura = int(planta_img.height * 760 / planta_img.width)
-    planta_img = planta_img.resize((760, planta_altura))
-    altura = max(1200, 420 + planta_altura + (len(dados) * 28))
-    pagina = Image.new("RGB", (largura, altura), "white")
-    desenho = ImageDraw.Draw(pagina)
-
-    y = 40
-    desenho.text((50, y), texto_pdf("Relatório do inventário de computadores"), fill=(17, 24, 39))
-    y += 36
-    desenho.text(
-        (50, y),
-        texto_pdf(
-            f"Total: {len(dados)} | Ativos: {(dados['status'] == 'Ativo').sum()} | "
-            f"Manutenção: {(dados['status'] == 'Manutenção').sum()} | "
-            f"Desligados: {(dados['status'] == 'Desligado').sum()} | "
-            f"Reservas: {(dados['status'] == 'Reserva').sum()}"
-        ),
-        fill=(17, 24, 39),
+    largura_planta_pdf = doc.width
+    altura_planta_pdf = min(doc.height - 3.4 * cm, largura_planta_pdf * planta_img.height / planta_img.width)
+    historia.append(RLImage(BytesIO(planta_relatorio), width=largura_planta_pdf, height=altura_planta_pdf))
+    historia.append(Spacer(1, 0.35 * cm))
+    legenda = Table(
+        [["● Ativo", "● Manutenção", "● Desligado", "● Reserva"]],
+        colWidths=[4 * cm, 4 * cm, 4 * cm, 4 * cm],
     )
-    y += 44
-    desenho.text((50, y), "Alertas", fill=(17, 24, 39))
-    y += 26
+    legenda.setStyle(
+        TableStyle(
+            [
+                ("TEXTCOLOR", (0, 0), (0, 0), cor_reportlab("#2E7D32")),
+                ("TEXTCOLOR", (1, 0), (1, 0), cor_reportlab("#FB8C00")),
+                ("TEXTCOLOR", (2, 0), (2, 0), cor_reportlab("#D32F2F")),
+                ("TEXTCOLOR", (3, 0), (3, 0), cor_reportlab("#1976D2")),
+                ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                ("FONTSIZE", (0, 0), (-1, -1), 9),
+            ]
+        )
+    )
+    historia.append(legenda)
+    historia.append(PageBreak())
 
+    historia.append(paragrafo_pdf("Alertas", estilos["Secao"]))
     if alertas.empty:
-        desenho.text((70, y), "Nenhum alerta encontrado.", fill=(34, 197, 94))
-        y += 28
+        historia.append(paragrafo_pdf("Nenhum alerta encontrado no inventário atual.", estilos["Texto"]))
     else:
         for _, item in alertas.iterrows():
             motivos = ", ".join(item["motivos_alerta"])
-            texto_alerta = f"{item['id']} - {item['sala']} - {motivos}"
-            desenho.text((70, y), texto_pdf(shorten(texto_alerta, width=115)), fill=(180, 35, 24))
-            y += 26
+            cor_alerta = cor_reportlab("#DC2626") if "Desligado" in motivos else cor_reportlab("#F97316")
+            caixa = Table(
+                [
+                    [paragrafo_pdf(f"● {item['id']}", estilos["AlertaTitulo"])],
+                    [paragrafo_pdf(motivos, estilos["Texto"])],
+                    [paragrafo_pdf(f"Sala: {item['sala']}", estilos["Texto"])],
+                ],
+                colWidths=[doc.width],
+            )
+            caixa.setStyle(
+                TableStyle(
+                    [
+                        ("BACKGROUND", (0, 0), (-1, -1), cor_reportlab("#FFF7ED")),
+                        ("BOX", (0, 0), (-1, -1), 0.6, cor_reportlab("#FDBA74")),
+                        ("LINEBEFORE", (0, 0), (0, -1), 4, cor_alerta),
+                        ("LEFTPADDING", (0, 0), (-1, -1), 10),
+                        ("RIGHTPADDING", (0, 0), (-1, -1), 10),
+                        ("TOPPADDING", (0, 0), (-1, -1), 6),
+                        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+                    ]
+                )
+            )
+            historia.append(caixa)
+            historia.append(Spacer(1, 0.22 * cm))
+    historia.append(PageBreak())
 
-    y += 20
-    pagina.paste(planta_img, (50, y))
-    y += planta_img.height + 36
-    desenho.text((50, y), "Inventario", fill=(17, 24, 39))
-    y += 30
-
-    for _, item in dados.iterrows():
-        linha = (
-            f"{item['id']} | {item['status']} | {item['sala']} | "
-            f"{item['usuario']} | {item['armazenamento']} | {item['placa_video']}"
+    historia.append(paragrafo_pdf("Resumo dos Computadores", estilos["Secao"]))
+    linhas_resumo = dados[["id", "sala", "usuario", "status", "ram", "armazenamento", "sistema"]].astype(str).values.tolist()
+    historia.append(
+        tabela_pdf(
+            ["ID", "Sala", "Usuário", "Status", "RAM", "Armazenamento", "Sistema"],
+            linhas_resumo,
+            [2.0 * cm, 2.7 * cm, 2.8 * cm, 2.0 * cm, 1.5 * cm, 2.7 * cm, 2.4 * cm],
+            estilos,
+            fonte=7,
         )
-        desenho.text((70, y), texto_pdf(shorten(linha, width=150)), fill=(17, 24, 39))
-        y += 26
+    )
+    historia.append(PageBreak())
 
-    arquivo = BytesIO()
-    pagina.save(arquivo, format="PDF", resolution=100)
+    historia.append(paragrafo_pdf("Informações Completas", estilos["Secao"]))
+    linhas_completas = dados[
+        [
+            "id",
+            "sala",
+            "usuario",
+            "status",
+            "sistema",
+            "ram",
+            "processador",
+            "armazenamento",
+            "placa_video",
+            "observacoes",
+        ]
+    ].astype(str).values.tolist()
+    historia.append(
+        tabela_pdf(
+            [
+                "ID",
+                "Sala",
+                "Usuário",
+                "Status",
+                "Sistema",
+                "RAM",
+                "Processador",
+                "Armazenamento",
+                "Placa de vídeo",
+                "Observações",
+            ],
+            linhas_completas,
+            [1.3 * cm, 1.7 * cm, 1.7 * cm, 1.4 * cm, 1.8 * cm, 1.2 * cm, 2.6 * cm, 1.8 * cm, 1.8 * cm, 2.4 * cm],
+            estilos,
+            fonte=6.3,
+        )
+    )
+
+    doc.build(historia, canvasmaker=RodapeCanvas)
+    arquivo.seek(0)
     return arquivo.getvalue()
 
 
@@ -512,21 +1065,75 @@ if "editando_computador" not in st.session_state:
 if "cadastrando_computador" not in st.session_state:
     st.session_state.cadastrando_computador = False
 
+if "status_filtrados" not in st.session_state:
+    st.session_state.status_filtrados = list(cores.keys())
+
+if "termo_busca" not in st.session_state:
+    st.session_state.termo_busca = ""
+
+if "modo_posicionar" not in st.session_state:
+    st.session_state.modo_posicionar = False
+
+if "selecionando_posicao_cadastro" not in st.session_state:
+    st.session_state.selecionando_posicao_cadastro = False
+
+if "cadastro_x" not in st.session_state:
+    st.session_state.cadastro_x = min(100, largura_planta)
+
+if "cadastro_y" not in st.session_state:
+    st.session_state.cadastro_y = min(100, altura_planta)
+
+if "mensagem_sucesso" not in st.session_state:
+    st.session_state.mensagem_sucesso = ""
+
+if "mensagem_erro" not in st.session_state:
+    st.session_state.mensagem_erro = ""
+
+if "mapa_versao" not in st.session_state:
+    st.session_state.mapa_versao = 0
+
 if st.session_state.computador_selecionado not in df["id"].tolist():
     st.session_state.computador_selecionado = df.iloc[0]["id"]
+
+pc_parametro = st.query_params.get("pc")
+
+if pc_parametro in df["id"].astype(str).tolist():
+    st.session_state.computador_selecionado = pc_parametro
+
+if st.session_state.mensagem_sucesso:
+    st.success(st.session_state.mensagem_sucesso)
+    st.session_state.mensagem_sucesso = ""
+
+if st.session_state.mensagem_erro:
+    st.error(st.session_state.mensagem_erro)
+    st.session_state.mensagem_erro = ""
 
 with st.sidebar:
     st.title("Detalhes do computador")
 
+    if st.button("Resetar filtros", key="resetar_filtros", use_container_width=True):
+        st.session_state.status_filtrados = list(cores.keys())
+        st.session_state.termo_busca = ""
+        st.rerun()
+
     status_filtrados = st.multiselect(
         "Filtrar por status",
         list(cores.keys()),
-        default=list(cores.keys()),
+        key="status_filtrados",
     )
     termo_busca = st.text_input(
         "Buscar por nome, usuário, armazenamento ou placa de vídeo",
         placeholder="Ex.: PC-01, João, 256 GB, RTX",
+        key="termo_busca",
     ).strip()
+    modo_posicionar = st.checkbox(
+        "Modo posicionar",
+        key="modo_posicionar",
+        help="Com este modo ligado, clique na planta para salvar a nova posição do computador selecionado.",
+    )
+
+    if modo_posicionar:
+        st.info("Clique em um ponto da planta para reposicionar o computador selecionado.")
 
     df_visual = df[df["status"].isin(status_filtrados)] if status_filtrados else df.copy()
 
@@ -599,6 +1206,28 @@ with st.sidebar:
         + "</div>",
         unsafe_allow_html=True,
     )
+
+    with st.expander("QR Code do computador"):
+        st.text_input(
+            "URL base do app",
+            value=st.session_state.get("app_base_url", "http://localhost:8503"),
+            key="app_base_url",
+        )
+        url_qr = url_computador(computador["id"])
+        st.caption(url_qr)
+        imagem_qr = qr_code_png(url_qr)
+
+        if imagem_qr is None:
+            st.warning("Instale a dependência qrcode para gerar o QR Code.")
+        else:
+            st.image(imagem_qr, width=180)
+            st.download_button(
+                "Baixar QR Code",
+                data=imagem_qr,
+                file_name=f"qr_{computador['id']}.png",
+                mime="image/png",
+                use_container_width=True,
+            )
 
     if st.button("Editar", key="abrir_edicao", use_container_width=True):
         st.session_state.editando_computador = True
@@ -761,9 +1390,40 @@ with st.sidebar:
         ):
             st.session_state.cadastrando_computador = True
             st.session_state.editando_computador = False
+            st.session_state.selecionando_posicao_cadastro = False
+            st.session_state.cadastro_x = min(100, largura_planta)
+            st.session_state.cadastro_y = min(100, altura_planta)
 
         if st.session_state.cadastrando_computador:
             proximo_id = f"PC-{len(df) + 1:02d}"
+
+            if st.button(
+                "Selecionar posição na planta",
+                key="selecionar_posicao_cadastro",
+                use_container_width=True,
+            ):
+                st.session_state.selecionando_posicao_cadastro = not st.session_state.selecionando_posicao_cadastro
+
+            if st.session_state.selecionando_posicao_cadastro:
+                st.info("Clique na planta para preencher as coordenadas do novo computador.")
+                coordenadas_cadastro = streamlit_image_coordinates(
+                    planta,
+                    key=f"planta_cadastro_{st.session_state.mapa_versao}",
+                )
+
+                if coordenadas_cadastro:
+                    st.session_state.cadastro_x = max(
+                        0,
+                        min(int(round(coordenadas_cadastro["x"])), largura_planta),
+                    )
+                    st.session_state.cadastro_y = max(
+                        0,
+                        min(int(round(coordenadas_cadastro["y"])), altura_planta),
+                    )
+                    st.session_state.selecionando_posicao_cadastro = False
+                    st.success(
+                        f"Posição selecionada: X {st.session_state.cadastro_x}, Y {st.session_state.cadastro_y}."
+                    )
 
             with st.form("cadastrar_computador"):
                 cadastro_id = st.text_input("Nome do computador", value=proximo_id)
@@ -783,15 +1443,17 @@ with st.sidebar:
                     "Coordenada X",
                     min_value=0,
                     max_value=largura_planta,
-                    value=min(100, largura_planta),
+                    value=int(st.session_state.cadastro_x),
                     step=1,
+                    key="cadastro_x_input",
                 )
                 cadastro_y = st.number_input(
                     "Coordenada Y",
                     min_value=0,
                     max_value=altura_planta,
-                    value=min(100, altura_planta),
+                    value=int(st.session_state.cadastro_y),
                     step=1,
+                    key="cadastro_y_input",
                 )
 
                 cadastrar = st.form_submit_button(
@@ -805,6 +1467,9 @@ with st.sidebar:
 
             if cancelar_cadastro:
                 st.session_state.cadastrando_computador = False
+                st.session_state.selecionando_posicao_cadastro = False
+                st.session_state.cadastro_x = min(100, largura_planta)
+                st.session_state.cadastro_y = min(100, altura_planta)
                 st.rerun()
 
             if cadastrar:
@@ -836,6 +1501,9 @@ with st.sidebar:
 
                     st.session_state.computador_selecionado = novo_computador["id"]
                     st.session_state.cadastrando_computador = False
+                    st.session_state.selecionando_posicao_cadastro = False
+                    st.session_state.cadastro_x = min(100, largura_planta)
+                    st.session_state.cadastro_y = min(100, altura_planta)
                     st.success("Computador cadastrado.")
                     st.rerun()
 
@@ -917,6 +1585,91 @@ with st.sidebar:
         else:
             st.info("Nenhum backup criado ainda.")
 
+st.markdown(
+    f"""
+    <div style="
+        text-align: center;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        margin: 0.4rem 0 1.8rem 0;
+    ">
+        {logo_html_dashboard()}
+        <div style="font-size: 30px; font-weight: 700; color: #F8FAFC; line-height: 1.15;">JR Grupo</div>
+        <div style="font-size: 20px; font-weight: 600; color: #CBD5E1; margin-top: 6px; line-height: 1.25;">Gestão de Ativos de TI</div>
+        <div style="font-size: 16px; color: #94A3B8; margin-top: 4px; line-height: 1.3;">Dashboard de Inventário de Computadores</div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+st.markdown("### Dashboard")
+ram_validas = [valor for valor in df["ram"].map(ram_em_gb).dropna().tolist() if valor > 0]
+ram_media = sum(ram_validas) / len(ram_validas) if ram_validas else 0
+windows_10 = (df["sistema"].astype(str).str.lower() == "windows 10").sum()
+windows_11 = (df["sistema"].astype(str).str.lower() == "windows 11").sum()
+
+col_total, col_alertas, col_ram, col_windows = st.columns(4)
+col_total.metric("Computadores", len(df))
+col_alertas.metric("Com alerta", len(computadores_em_alerta))
+col_ram.metric("RAM média", f"{ram_media:.1f} GB" if ram_validas else "N/D")
+col_windows.metric("Windows 10 / 11", f"{windows_10} / {windows_11}")
+
+dash_col1, dash_col2 = st.columns(2)
+
+status_dashboard = df_visual["status"].value_counts().reset_index()
+status_dashboard.columns = ["status", "total"]
+fig_status = go.Figure(
+    go.Bar(
+        x=status_dashboard["status"],
+        y=status_dashboard["total"],
+        marker_color=[cores.get(status, "#616161") for status in status_dashboard["status"]],
+    )
+)
+fig_status.update_layout(
+    title="Total por status",
+    height=300,
+    margin=dict(l=10, r=10, t=45, b=10),
+)
+dash_col1.plotly_chart(fig_status, use_container_width=True)
+
+sala_dashboard = df_visual["sala"].value_counts().head(10).reset_index()
+sala_dashboard.columns = ["sala", "total"]
+fig_sala = go.Figure(
+    go.Bar(
+        x=sala_dashboard["total"],
+        y=sala_dashboard["sala"],
+        orientation="h",
+        marker_color="#1976D2",
+    )
+)
+fig_sala.update_layout(
+    title="Top salas por quantidade",
+    height=300,
+    margin=dict(l=10, r=10, t=45, b=10),
+    yaxis=dict(autorange="reversed"),
+)
+dash_col2.plotly_chart(fig_sala, use_container_width=True)
+
+fig_windows = go.Figure(
+    go.Pie(
+        labels=["Windows 10", "Windows 11"],
+        values=[windows_10, windows_11],
+        hole=0.45,
+    )
+)
+fig_windows.update_layout(
+    title="Comparação Windows 10 vs Windows 11",
+    height=300,
+    margin=dict(l=10, r=10, t=45, b=10),
+)
+st.plotly_chart(fig_windows, use_container_width=True)
+
+st.divider()
+st.markdown("### Planta de localização")
+st.caption("Use a planta para localizar e selecionar computadores. Os detalhes completos ficam na sidebar.")
+
 total = len(df_visual)
 ativos = (df_visual["status"] == "Ativo").sum()
 manutencao = (df_visual["status"] == "Manutenção").sum()
@@ -953,11 +1706,12 @@ if not computadores_em_alerta_mapa.empty:
             name="Alerta",
             showlegend=False,
             marker=dict(
-                size=36,
+                size=16,
                 color="rgba(0,0,0,0)",
-                line=dict(color="#D32F2F", width=4),
+                line=dict(color="rgba(211,47,47,0.55)", width=2),
             ),
             hoverinfo="skip",
+            hovertemplate=None,
         )
     )
 
@@ -977,19 +1731,21 @@ for status in ["Ativo", "Desligado", "Manutenção", "Reserva"]:
             name=status,
             showlegend=False,
             marker=dict(
-                size=18,
+                size=8,
                 color=cores.get(status, "#616161"),
-                line=dict(color="white", width=2),
+                line=dict(color="rgba(255,255,255,0.9)", width=1),
             ),
-            customdata=grupo[
-                ["id", "sala", "armazenamento", "placa_video", "status", "usuario", "sistema"]
-            ].values.tolist(),
+            customdata=list(
+                zip(
+                    grupo["id"],
+                    grupo["sala"],
+                    grupo["status"].map(lambda valor: f"{icones.get(valor, '')} {valor}"),
+                )
+            ),
             hovertemplate=(
                 "<b>%{customdata[0]}</b><br>"
-                "Sala: %{customdata[1]}<br>"
-                "Armazenamento: %{customdata[2]}<br>"
-                "Placa de Vídeo: %{customdata[3]}<br>"
-                "Status: %{customdata[4]}"
+                "%{customdata[1]}<br>"
+                "%{customdata[2]}"
                 "<extra></extra>"
             ),
         )
@@ -1004,108 +1760,131 @@ fig.add_trace(
         mode="markers",
         showlegend=False,
         marker=dict(
-            size=42,
-            color="rgba(0,0,0,0)",
-            line=dict(color="black", width=5),
+            size=18,
+            color="rgba(255,255,255,0)",
+            line=dict(color="rgba(25,118,210,0.35)", width=3),
         ),
         hoverinfo="skip",
+        hovertemplate=None,
+    )
+)
+
+fig.add_trace(
+    go.Scatter(
+        x=[computador["x"]],
+        y=[computador["y"]],
+        mode="markers",
+        showlegend=False,
+        marker=dict(
+            size=12,
+            color=cores.get(computador["status"], "#616161"),
+            line=dict(color="white", width=3),
+        ),
+        hoverinfo="skip",
+        hovertemplate=None,
     )
 )
 
 fig.add_annotation(
-    text="🟢 Ativo&nbsp;&nbsp;&nbsp;🔴 Desligado&nbsp;&nbsp;&nbsp;🟠 Manutenção&nbsp;&nbsp;&nbsp;🔵 Reserva",
+    text="🟢 Ativo&nbsp;&nbsp;🟠 Manutenção&nbsp;&nbsp;🔴 Desligado&nbsp;&nbsp;🔵 Reserva",
     xref="paper",
     yref="paper",
     x=0.02,
-    y=1.06,
+    y=1.045,
     xanchor="left",
     yanchor="top",
     showarrow=False,
     align="left",
-    font=dict(size=13, color="#111827"),
+    font=dict(size=12, color="#111827"),
 )
 
 fig.update_layout(
-    title=dict(
-        text=(
-            "Inventário de Computadores - Planta Interativa"
-            f"<br><sup>Total: {total} | Ativos: {ativos} | "
-            f"Manutenção: {manutencao} | Desligados: {desligados} | Reservas: {reservas}</sup>"
-        ),
-        x=0.02,
-        xanchor="left",
-    ),
+    autosize=True,
     height=820,
     coloraxis_showscale=False,
     showlegend=False,
-    paper_bgcolor="white",
-    plot_bgcolor="white",
+    hovermode="closest",
+    clickmode="event+select",
+    hoverdistance=5,
+    spikedistance=-1,
+    xaxis=dict(
+        visible=False,
+        range=[0, largura_planta - 2],
+        showgrid=False,
+        zeroline=False,
+        showline=False,
+        mirror=False,
+        fixedrange=True,
+        constrain="domain",
+    ),
+    yaxis=dict(
+        visible=False,
+        range=[altura_planta, 0],
+        showgrid=False,
+        zeroline=False,
+        showline=False,
+        mirror=False,
+        fixedrange=True,
+        constrain="domain",
+        scaleanchor="x",
+        scaleratio=1,
+    ),
     hoverlabel=dict(
         bgcolor="white",
-        bordercolor="#1976D2",
-        font_size=13,
+        bordercolor="rgba(25,118,210,0.45)",
+        font_size=12,
         font_family="Arial",
         font_color="black",
+        align="left",
     ),
-    margin=dict(l=10, r=10, t=110, b=10),
+    margin=dict(l=0, r=0, t=0, b=0),
 )
 
-fig.update_xaxes(
-    visible=False,
-    range=[0, largura_planta],
-    showgrid=False,
-    zeroline=False,
-)
-fig.update_yaxes(
-    visible=False,
-    range=[altura_planta, 0],
-    showgrid=False,
-    zeroline=False,
-    scaleanchor="x",
-    scaleratio=1,
-)
+if modo_posicionar:
+    coordenadas_imagem = streamlit_image_coordinates(
+        planta,
+        key=f"planta_posicionar_{st.session_state.mapa_versao}",
+    )
+    print("MODO POSICIONAR:", modo_posicionar)
+    print("SELECTED_POINTS:", coordenadas_imagem)
 
-selected_points = plotly_events(
-    fig,
-    click_event=True,
-    hover_event=False,
-    select_event=False,
-    override_height=820,
-    override_width=1400,
-    key=f"mapa_ativos_{st.session_state.computador_selecionado}",
-)
+    if coordenadas_imagem:
+        computador_id = st.session_state.computador_selecionado
+        novo_x = int(round(coordenadas_imagem["x"]))
+        novo_y = int(round(coordenadas_imagem["y"]))
+        novo_x = max(0, min(novo_x, largura_planta))
+        novo_y = max(0, min(novo_y, altura_planta))
+        print("COMPUTADOR:", computador_id)
+        print("NOVO X:", novo_x)
+        print("NOVO Y:", novo_y)
 
-if selected_points and not troca_pelo_selectbox:
-    novo_computador_id = None
+        df, salvou_posicao = salvar_posicao_computador(df, computador_id, novo_x, novo_y)
+        st.session_state.computador_selecionado = computador_id
 
-    for ponto in selected_points:
-        numero_trace = ponto.get("curveNumber")
-        numero_ponto = ponto.get("pointNumber")
+        if salvou_posicao:
+            st.session_state.mensagem_sucesso = f"{computador_id} reposicionado."
+        else:
+            st.session_state.mensagem_erro = "Não foi possível salvar a nova posição."
 
-        if numero_trace is not None:
-            numero_trace = int(numero_trace)
-
-        if numero_ponto is not None:
-            numero_ponto = int(numero_ponto)
-
-        ids_do_trace = ids_por_trace.get(numero_trace, [])
-
-        if numero_ponto is not None and numero_ponto < len(ids_do_trace):
-            novo_computador_id = ids_do_trace[numero_ponto]
-            break
-
-    if novo_computador_id is None:
-        ponto = selected_points[0]
-        ponto_x = ponto.get("x")
-        ponto_y = ponto.get("y")
-        computador_clicado = df[(df["x"] == ponto_x) & (df["y"] == ponto_y)]
-
-        if not computador_clicado.empty:
-            novo_computador_id = computador_clicado.iloc[0]["id"]
-
-    if (
-        novo_computador_id
-        and st.session_state.computador_selecionado != novo_computador_id
-    ):
-        st.session_state.computador_selecionado = novo_computador_id
+        st.session_state.mapa_versao += 1
         st.rerun()
+else:
+    selected_points = plotly_events(
+        fig,
+        click_event=True,
+        hover_event=False,
+        select_event=False,
+        override_height=820,
+        key=f"mapa_ativos_{st.session_state.mapa_versao}",
+    )
+
+    if selected_points and not troca_pelo_selectbox:
+        novo_computador_id = computador_clicado(selected_points, ids_por_trace, df)
+
+        if (
+            novo_computador_id
+            and st.session_state.computador_selecionado != novo_computador_id
+        ):
+            st.session_state.computador_selecionado = novo_computador_id
+            st.session_state.editando_computador = False
+            st.rerun()
