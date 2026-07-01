@@ -2,8 +2,8 @@ from pathlib import Path
 from datetime import datetime
 from io import BytesIO
 import base64
+import os
 import re
-from shutil import copy2
 from textwrap import shorten
 from unicodedata import normalize
 from urllib.parse import quote
@@ -36,11 +36,25 @@ from streamlit_image_coordinates import streamlit_image_coordinates
 from streamlit_plotly_events import plotly_events
 
 try:
+    from dotenv import load_dotenv
+except ImportError:
+    load_dotenv = None
+
+try:
     import qrcode
 except ImportError:
     qrcode = None
 
+try:
+    from sqlalchemy import create_engine, text
+except ImportError:
+    create_engine = None
+    text = None
+
 BASE_DIR = Path(__file__).resolve().parent
+
+if load_dotenv is not None:
+    load_dotenv(BASE_DIR / ".env")
 
 # PLANTA_PATH = BASE_DIR / "assets" / "planta.png"
 
@@ -68,8 +82,9 @@ CAMPOS_CSV = [
     "observacoes",
 ]
 CAMPOS_MOVIMENTACAO = [
-    "data_hora",
     "id",
+    "data_hora",
+    "computador_id",
     "campo",
     "valor_anterior",
     "valor_novo",
@@ -124,6 +139,49 @@ st.markdown(
     .asset-value {
         color: rgba(248, 250, 252, 0.96);
         overflow-wrap: anywhere;
+    }
+    .dash-card-grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 12px;
+        margin: 10px 0 16px 0;
+    }
+    .dash-card {
+        border: 1px solid rgba(148, 163, 184, 0.22);
+        border-radius: 8px;
+        padding: 14px 16px;
+        background: linear-gradient(180deg, rgba(15, 23, 42, 0.88), rgba(15, 23, 42, 0.62));
+        box-shadow: 0 10px 28px rgba(0, 0, 0, 0.18);
+    }
+    .dash-card-label {
+        color: #94A3B8;
+        font-size: 0.78rem;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0;
+        margin-bottom: 8px;
+    }
+    .dash-card-value {
+        color: #F8FAFC;
+        font-size: 1.7rem;
+        line-height: 1.1;
+        font-weight: 800;
+    }
+    .executive-summary {
+        border: 1px solid rgba(59, 130, 246, 0.22);
+        border-left: 4px solid #3B82F6;
+        border-radius: 8px;
+        padding: 14px 16px;
+        margin: 4px 0 18px 0;
+        background: rgba(30, 41, 59, 0.7);
+        color: #E2E8F0;
+        font-size: 0.98rem;
+        line-height: 1.45;
+    }
+    @media (max-width: 1200px) {
+        .dash-card-grid {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
     }
     </style>
     """,
@@ -210,28 +268,8 @@ def cor_hex_para_rgb(cor):
     return tuple(int(cor[indice : indice + 2], 16) for indice in (0, 2, 4))
 
 
-def agora_id():
-    return datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-
-
 def agora_texto():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-
-def criar_backup_csv():
-    if not CSV_PATH.exists():
-        return None
-
-    BACKUP_DIR.mkdir(parents=True, exist_ok=True)
-    destino = BACKUP_DIR / f"computadores_{agora_id()}.csv"
-    copy2(CSV_PATH, destino)
-    return destino
-
-
-def salvar_com_backup(dados):
-    criar_backup_csv()
-    dados = normalizar_dataframe(dados)
-    dados.to_csv(CSV_PATH, index=False)
 
 
 def normalizar_dataframe(dados):
@@ -273,6 +311,247 @@ def normalizar_dataframe(dados):
         dados[coluna] = pd.to_numeric(dados[coluna], errors="coerce").fillna(0).astype(int)
 
     return dados
+
+
+def obter_url_banco():
+    try:
+        url_secrets = st.secrets.get("SUPABASE_DB_URL", "")
+    except Exception:
+        url_secrets = ""
+
+    return (url_secrets or os.getenv("SUPABASE_DB_URL", "")).strip()
+
+
+def normalizar_url_postgres(url):
+    if url.startswith("postgres://"):
+        url = url.replace("postgres://", "postgresql+psycopg2://", 1)
+    elif url.startswith("postgresql://"):
+        url = url.replace("postgresql://", "postgresql+psycopg2://", 1)
+
+    if "sslmode=" not in url and "localhost" not in url and "127.0.0.1" not in url:
+        separador = "&" if "?" in url else "?"
+        url = f"{url}{separador}sslmode=require"
+
+    return url
+
+
+@st.cache_resource
+def conectar_banco():
+    if create_engine is None:
+        raise RuntimeError(
+            "Dependência ausente: instale sqlalchemy e psycopg2-binary para conectar ao Supabase."
+        )
+
+    url = obter_url_banco()
+
+    if not url:
+        raise RuntimeError(
+            "SUPABASE_DB_URL não configurada. Defina essa variável no ambiente ou em .streamlit/secrets.toml."
+        )
+
+    return create_engine(normalizar_url_postgres(url), pool_pre_ping=True)
+
+
+def inicializar_banco():
+    engine = conectar_banco()
+
+    with engine.begin() as conexao:
+        conexao.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS computadores (
+                    id TEXT PRIMARY KEY,
+                    sala TEXT,
+                    x INTEGER,
+                    y INTEGER,
+                    status TEXT,
+                    armazenamento TEXT,
+                    placa_video TEXT,
+                    usuario TEXT,
+                    sistema TEXT,
+                    ram TEXT,
+                    processador TEXT,
+                    observacoes TEXT
+                )
+                """
+            )
+        )
+        conexao.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS movimentacoes (
+                    id BIGSERIAL PRIMARY KEY,
+                    data_hora TIMESTAMP,
+                    computador_id TEXT,
+                    campo TEXT,
+                    valor_anterior TEXT,
+                    valor_novo TEXT,
+                    acao TEXT
+                )
+                """
+            )
+        )
+
+
+def importar_csv_inicial():
+    engine = conectar_banco()
+
+    with engine.begin() as conexao:
+        total_computadores = conexao.execute(text("SELECT COUNT(*) FROM computadores")).scalar() or 0
+        total_movimentacoes = conexao.execute(text("SELECT COUNT(*) FROM movimentacoes")).scalar() or 0
+
+    importados = 0
+
+    if total_computadores == 0 and CSV_PATH.exists():
+        dados = normalizar_dataframe(pd.read_csv(CSV_PATH).fillna(""))
+        registros = dados.to_dict("records")
+        importar_computadores(registros, ignorar_duplicados=True)
+        importados = len(registros)
+
+    if total_movimentacoes == 0 and MOVIMENTACOES_PATH.exists():
+        historico = pd.read_csv(MOVIMENTACOES_PATH).fillna("")
+        registros_historico = []
+
+        for _, linha in historico.iterrows():
+            computador_id = linha.get("computador_id", linha.get("id", ""))
+            registros_historico.append(
+                {
+                    "data_hora": str(linha.get("data_hora", "")) or agora_texto(),
+                    "computador_id": str(computador_id),
+                    "campo": str(linha.get("campo", "")),
+                    "valor_anterior": str(linha.get("valor_anterior", "")),
+                    "valor_novo": str(linha.get("valor_novo", "")),
+                    "acao": str(linha.get("acao", "")),
+                }
+            )
+
+        if registros_historico:
+            with engine.begin() as conexao:
+                conexao.execute(
+                    text(
+                        """
+                        INSERT INTO movimentacoes (
+                            data_hora,
+                            computador_id,
+                            campo,
+                            valor_anterior,
+                            valor_novo,
+                            acao
+                        )
+                        VALUES (
+                            :data_hora,
+                            :computador_id,
+                            :campo,
+                            :valor_anterior,
+                            :valor_novo,
+                            :acao
+                        )
+                        """
+                    ),
+                    registros_historico,
+                )
+
+    return importados
+
+
+def carregar_computadores():
+    engine = conectar_banco()
+
+    with engine.connect() as conexao:
+        dados = pd.read_sql_query(
+            text(f"SELECT {', '.join(CAMPOS_CSV)} FROM computadores ORDER BY id"),
+            conexao,
+        )
+
+    return normalizar_dataframe(dados)
+
+
+def carregar_movimentacoes():
+    engine = conectar_banco()
+
+    with engine.connect() as conexao:
+        return pd.read_sql_query(
+            text(
+                """
+                SELECT id, data_hora, computador_id, campo, valor_anterior, valor_novo, acao
+                FROM movimentacoes
+                ORDER BY id
+                """
+            ),
+            conexao,
+        ).fillna("")
+
+
+def salvar_computador(registro):
+    registro = normalizar_dataframe(pd.DataFrame([registro])).iloc[0].to_dict()
+    engine = conectar_banco()
+    placeholders = ", ".join([f":{campo}" for campo in CAMPOS_CSV])
+
+    with engine.begin() as conexao:
+        conexao.execute(
+            text(
+                f"""
+                INSERT INTO computadores ({", ".join(CAMPOS_CSV)})
+                VALUES ({placeholders})
+                """
+            ),
+            registro,
+        )
+
+
+def importar_computadores(registros, ignorar_duplicados=False):
+    if not registros:
+        return
+
+    engine = conectar_banco()
+    placeholders = ", ".join([f":{campo}" for campo in CAMPOS_CSV])
+    conflito = " ON CONFLICT (id) DO NOTHING" if ignorar_duplicados else ""
+
+    with engine.begin() as conexao:
+        conexao.execute(
+            text(
+                f"""
+                INSERT INTO computadores ({", ".join(CAMPOS_CSV)})
+                VALUES ({placeholders})
+                {conflito}
+                """
+            ),
+            normalizar_dataframe(pd.DataFrame(registros)).to_dict("records"),
+        )
+
+
+def atualizar_computador(computador_id, registro, acao="Edição"):
+    dados_atuais = carregar_computadores()
+    computador_atual = dados_atuais[dados_atuais["id"] == computador_id]
+
+    if computador_atual.empty:
+        return False
+
+    registro_antigo = computador_atual.iloc[0].to_dict()
+    registro_novo = normalizar_dataframe(pd.DataFrame([registro])).iloc[0].to_dict()
+    engine = conectar_banco()
+
+    atribuicoes = ", ".join([f"{campo} = :{campo}" for campo in CAMPOS_CSV])
+    parametros = {**registro_novo, "id_original": computador_id}
+
+    with engine.begin() as conexao:
+        conexao.execute(
+            text(f"UPDATE computadores SET {atribuicoes} WHERE id = :id_original"),
+            parametros,
+        )
+
+    registrar_movimentacoes(registro_antigo, registro_novo, acao)
+    return True
+
+
+def excluir_computador(computador_id):
+    engine = conectar_banco()
+
+    with engine.begin() as conexao:
+        conexao.execute(
+            text("DELETE FROM computadores WHERE id = :computador_id"),
+            {"computador_id": computador_id},
+        )
 
 
 def valor_limpo(valor):
@@ -326,6 +605,125 @@ def sistema_antigo(valor):
 
     sistema = texto_normalizado(valor)
     return sistema in {texto_normalizado(item) for item in SISTEMAS_ANTIGOS}
+
+
+def valor_preenchido(valor):
+    return texto_normalizado(valor) not in {
+        "",
+        "a coletar",
+        "nao informado",
+        "sem informacao",
+        "ninguem",
+        "sem usuario",
+        "vazio",
+    }
+
+
+def campo_pendente(valor):
+    return not valor_preenchido(valor)
+
+
+def padronizar_ram(valor):
+    if campo_pendente(valor):
+        return "A coletar"
+
+    quantidade = ram_em_gb(valor)
+
+    if quantidade is None:
+        return "A coletar"
+
+    if abs(quantidade - round(quantidade)) < 0.05:
+        quantidade = int(round(quantidade))
+
+    if quantidade in [4, 6, 8, 16, 32]:
+        return f"{quantidade} GB"
+
+    return "Outros"
+
+
+def padronizar_sistema(valor):
+    if campo_pendente(valor):
+        return "A coletar"
+
+    sistema = texto_normalizado(valor)
+
+    if sistema == "windows 10":
+        return "Windows 10"
+
+    if sistema == "windows 11":
+        return "Windows 11"
+
+    return "Outros"
+
+
+def campos_pendentes(item):
+    campos = ["armazenamento", "placa_video", "sistema", "ram", "processador", "usuario"]
+    return [campo for campo in campos if campo_pendente(item.get(campo, ""))]
+
+
+def tabela_pendencias(dados):
+    linhas = []
+
+    for _, item in dados.iterrows():
+        pendentes = campos_pendentes(item)
+
+        if pendentes:
+            linhas.append(
+                {
+                    "ID": item["id"],
+                    "Sala": item["sala"],
+                    "Usuário": item["usuario"],
+                    "Campos pendentes": ", ".join(pendentes),
+                }
+            )
+
+    return pd.DataFrame(linhas, columns=["ID", "Sala", "Usuário", "Campos pendentes"])
+
+
+def percentual_inventario_completo(dados):
+    campos = ["sala", "status", "armazenamento", "placa_video", "usuario", "sistema", "ram", "processador"]
+
+    if dados.empty:
+        return 0
+
+    total_campos = len(dados) * len(campos)
+    preenchidos = 0
+
+    for campo in campos:
+        preenchidos += dados[campo].map(valor_preenchido).sum()
+
+    return round((preenchidos / total_campos) * 100) if total_campos else 0
+
+
+def contar_alertas_por_tipo(dados):
+    contagem = {
+        "Manutenção": 0,
+        "Desligado": 0,
+        "Pouca RAM": 0,
+        "Sem usuário": 0,
+        "Sistema antigo": 0,
+        "Observação crítica": 0,
+    }
+
+    for _, item in dados.iterrows():
+        motivos = motivos_alerta(item)
+
+        for motivo in motivos:
+            if motivo in contagem:
+                contagem[motivo] += 1
+
+    return pd.DataFrame(
+        [{"tipo": tipo, "total": total} for tipo, total in contagem.items()]
+    )
+
+
+def render_dashboard_card(titulo, valor, cor="#3B82F6"):
+    return (
+        f"<div class='dash-card' style='border-top: 3px solid {cor};'>"
+        f"<div class='dash-card-label'>{escape(str(titulo))}</div>"
+        f"<div class='dash-card-value'>{escape(str(valor))}</div>"
+        "</div>"
+    )
 
 
 def url_computador(computador_id):
@@ -394,28 +792,12 @@ def salvar_posicao_computador(dados, computador_id, novo_x, novo_y):
     if not mascara_computador.any():
         return dados, False
 
-    registro_antigo = dados.loc[mascara_computador].iloc[0].to_dict()
-    x_antigo = registro_antigo.get("x", "")
-    y_antigo = registro_antigo.get("y", "")
-    print("ANTES:", x_antigo, y_antigo)
-    print("DEPOIS:", novo_x, novo_y)
-
-    dados.loc[mascara_computador, "x"] = novo_x
-    dados.loc[mascara_computador, "y"] = novo_y
     registro_novo = dados.loc[mascara_computador].iloc[0].to_dict()
+    registro_novo["x"] = int(novo_x)
+    registro_novo["y"] = int(novo_y)
 
-    registrar_movimentacoes(registro_antigo, registro_novo, "Posicionamento")
-    criar_backup_csv()
-    dados = normalizar_dataframe(dados)
-    dados.loc[dados["id"] == computador_id, "x"] = novo_x
-    dados.loc[dados["id"] == computador_id, "y"] = novo_y
-    dados.to_csv(CSV_PATH, index=False)
-
-    confirmacao = normalizar_dataframe(pd.read_csv(CSV_PATH))
-    linha = confirmacao[confirmacao["id"] == computador_id].iloc[0]
-    print("CSV:", linha["x"], linha["y"])
-    salvou = int(linha["x"]) == int(novo_x) and int(linha["y"]) == int(novo_y)
-    return dados, salvou
+    salvou = atualizar_computador(computador_id, registro_novo, "Posicionamento")
+    return carregar_computadores(), salvou
 
 
 def texto_pdf(valor):
@@ -471,7 +853,7 @@ def registrar_movimentacoes(registro_antigo, registro_novo, acao):
             linhas.append(
                 {
                     "data_hora": agora_texto(),
-                    "id": registro_novo.get("id", registro_antigo.get("id", "")),
+                    "computador_id": registro_novo.get("id", registro_antigo.get("id", "")),
                     "campo": campo,
                     "valor_anterior": valor_anterior,
                     "valor_novo": valor_novo,
@@ -482,14 +864,32 @@ def registrar_movimentacoes(registro_antigo, registro_novo, acao):
     if not linhas:
         return
 
-    if MOVIMENTACOES_PATH.exists():
-        historico = pd.read_csv(MOVIMENTACOES_PATH).fillna("")
-    else:
-        historico = pd.DataFrame(columns=CAMPOS_MOVIMENTACAO)
+    engine = conectar_banco()
 
-    historico = pd.concat([historico, pd.DataFrame(linhas)], ignore_index=True)
-    historico = historico.reindex(columns=CAMPOS_MOVIMENTACAO)
-    historico.to_csv(MOVIMENTACOES_PATH, index=False)
+    with engine.begin() as conexao:
+        conexao.execute(
+            text(
+                """
+                INSERT INTO movimentacoes (
+                    data_hora,
+                    computador_id,
+                    campo,
+                    valor_anterior,
+                    valor_novo,
+                    acao
+                )
+                VALUES (
+                    :data_hora,
+                    :computador_id,
+                    :campo,
+                    :valor_anterior,
+                    :valor_novo,
+                    :acao
+                )
+                """
+            ),
+            linhas,
+        )
 
 
 def motivos_alerta(item):
@@ -504,16 +904,16 @@ def motivos_alerta(item):
         motivos.append(status)
 
     if not usuario or usuario.lower() == "sem usuário":
-        motivos.append("sem usuário")
+        motivos.append("Sem usuário")
 
     if pouca_ram(ram):
-        motivos.append("pouca RAM")
+        motivos.append("Pouca RAM")
 
     if sistema_antigo(sistema):
-        motivos.append("sistema antigo")
+        motivos.append("Sistema antigo")
 
     if any(palavra in observacoes.lower() for palavra in PALAVRAS_CRITICAS):
-        motivos.append("observação crítica")
+        motivos.append("Observação crítica")
 
     return motivos
 
@@ -1036,11 +1436,27 @@ def planta_para_jpg(imagem, dados, computador_selecionado, paleta):
     return arquivo.getvalue()
 
 
-df = pd.read_csv(CSV_PATH)
+try:
+    inicializar_banco()
+    importar_csv_inicial()
+    df = carregar_computadores()
+except Exception as erro:
+    st.error("Não foi possível conectar ao PostgreSQL/Supabase.")
+    st.caption(
+        "Configure SUPABASE_DB_URL nas variáveis de ambiente ou em .streamlit/secrets.toml. "
+        "Exemplo de chave: SUPABASE_DB_URL."
+    )
+    st.exception(erro)
+    st.stop()
+
 planta = Image.open(PLANTA_PATH).convert("RGB")
 largura_planta, altura_planta = planta.size
 
 df = normalizar_dataframe(df)
+
+if df.empty:
+    st.warning("Nenhum computador encontrado no banco. Importe o CSV inicial ou cadastre uma máquina.")
+    st.stop()
 
 cores = {
     "Ativo": "#2E7D32",
@@ -1309,23 +1725,22 @@ with st.sidebar:
                     for erro in erros:
                         st.error(erro)
                 else:
-                    indice = df.index[df["id"] == computador["id"]][0]
-                    registro_antigo = df.loc[indice].to_dict()
-
-                    for campo, valor in registro_atualizado.items():
-                        df.loc[indice, campo] = valor
-
-                    registrar_movimentacoes(
-                        registro_antigo,
-                        registro_atualizado,
-                        "Edição",
-                    )
-                    salvar_com_backup(df)
-
-                    st.session_state.computador_selecionado = registro_atualizado["id"]
-                    st.session_state.editando_computador = False
-                    st.success("Dados atualizados.")
-                    st.rerun()
+                    try:
+                        atualizou = atualizar_computador(
+                            computador["id"],
+                            registro_atualizado,
+                            "Edição",
+                        )
+                    except Exception as erro:
+                        st.error(f"Não foi possível atualizar no Supabase: {erro}")
+                    else:
+                        if atualizou:
+                            st.session_state.computador_selecionado = registro_atualizado["id"]
+                            st.session_state.editando_computador = False
+                            st.success("Dados atualizados.")
+                            st.rerun()
+                        else:
+                            st.error("Computador não encontrado no banco.")
 
 
 with st.sidebar:
@@ -1493,19 +1908,18 @@ with st.sidebar:
                     for erro in erros:
                         st.error(erro)
                 else:
-                    df_atualizado = pd.concat(
-                        [df, pd.DataFrame([novo_computador])],
-                        ignore_index=True,
-                    )
-                    salvar_com_backup(df_atualizado)
-
-                    st.session_state.computador_selecionado = novo_computador["id"]
-                    st.session_state.cadastrando_computador = False
-                    st.session_state.selecionando_posicao_cadastro = False
-                    st.session_state.cadastro_x = min(100, largura_planta)
-                    st.session_state.cadastro_y = min(100, altura_planta)
-                    st.success("Computador cadastrado.")
-                    st.rerun()
+                    try:
+                        salvar_computador(novo_computador)
+                    except Exception as erro:
+                        st.error(f"Não foi possível cadastrar no Supabase: {erro}")
+                    else:
+                        st.session_state.computador_selecionado = novo_computador["id"]
+                        st.session_state.cadastrando_computador = False
+                        st.session_state.selecionando_posicao_cadastro = False
+                        st.session_state.cadastro_x = min(100, largura_planta)
+                        st.session_state.cadastro_y = min(100, altura_planta)
+                        st.success("Computador cadastrado.")
+                        st.rerun()
 
     with st.expander("Importação em massa"):
         arquivo_importacao = st.file_uploader(
@@ -1530,6 +1944,7 @@ with st.sidebar:
                 if not dados_importados.empty:
                     erros_importacao = []
                     df_atualizado = df.copy()
+                    registros_validos = []
 
                     for numero_linha, item in dados_importados.iterrows():
                         registro = item.to_dict()
@@ -1546,21 +1961,31 @@ with st.sidebar:
                             [df_atualizado, pd.DataFrame([registro])],
                             ignore_index=True,
                         )
+                        registros_validos.append(registro)
 
                     if erros_importacao:
                         for erro in erros_importacao:
                             st.error(erro)
 
-                    if len(df_atualizado) > len(df):
-                        salvar_com_backup(df_atualizado)
-                        st.success(
-                            f"{len(df_atualizado) - len(df)} computador(es) importado(s)."
-                        )
-                        st.rerun()
+                    if registros_validos:
+                        try:
+                            importar_computadores(registros_validos)
+                        except Exception as erro:
+                            st.error(f"Não foi possível importar no Supabase: {erro}")
+                        else:
+                            st.success(
+                                f"{len(registros_validos)} computador(es) importado(s)."
+                            )
+                            st.rerun()
 
     with st.expander("Controle de movimentação"):
-        if MOVIMENTACOES_PATH.exists():
-            historico_movimentacao = pd.read_csv(MOVIMENTACOES_PATH).fillna("")
+        try:
+            historico_movimentacao = carregar_movimentacoes()
+        except Exception as erro:
+            st.error(f"Não foi possível carregar o histórico do Supabase: {erro}")
+            historico_movimentacao = pd.DataFrame(columns=CAMPOS_MOVIMENTACAO)
+
+        if not historico_movimentacao.empty:
             st.dataframe(
                 historico_movimentacao.tail(10),
                 hide_index=True,
@@ -1605,66 +2030,153 @@ st.markdown(
 )
 
 st.markdown("### Dashboard")
-ram_validas = [valor for valor in df["ram"].map(ram_em_gb).dropna().tolist() if valor > 0]
-ram_media = sum(ram_validas) / len(ram_validas) if ram_validas else 0
-windows_10 = (df["sistema"].astype(str).str.lower() == "windows 10").sum()
-windows_11 = (df["sistema"].astype(str).str.lower() == "windows 11").sum()
+total_computadores = len(df)
+total_ativos = int((df["status"] == "Ativo").sum())
+total_manutencao = int((df["status"] == "Manutenção").sum())
+total_desligados = int((df["status"] == "Desligado").sum())
+total_reservas = int((df["status"] == "Reserva").sum())
+total_alertas = len(computadores_em_alerta)
+inventario_completo = percentual_inventario_completo(df)
+pendencias_df = tabela_pendencias(df)
 
-col_total, col_alertas, col_ram, col_windows = st.columns(4)
-col_total.metric("Computadores", len(df))
-col_alertas.metric("Com alerta", len(computadores_em_alerta))
-col_ram.metric("RAM média", f"{ram_media:.1f} GB" if ram_validas else "N/D")
-col_windows.metric("Windows 10 / 11", f"{windows_10} / {windows_11}")
+cards_dashboard = [
+    ("Total de computadores", total_computadores, "#3B82F6"),
+    ("Ativos", total_ativos, "#22C55E"),
+    ("Em manutenção", total_manutencao, "#F97316"),
+    ("Desligados", total_desligados, "#EF4444"),
+    ("Reservas", total_reservas, "#60A5FA"),
+    ("Com alerta", total_alertas, "#EAB308"),
+    ("Inventário completo", f"{inventario_completo}%", "#14B8A6"),
+]
+st.markdown(
+    "<div class='dash-card-grid'>"
+    + "".join(render_dashboard_card(titulo, valor, cor) for titulo, valor, cor in cards_dashboard)
+    + "</div>",
+    unsafe_allow_html=True,
+)
+
+status_mais_comum = df["status"].value_counts().idxmax() if not df.empty else "sem status"
+frase_status = (
+    "A maior parte está ativa."
+    if status_mais_comum == "Ativo"
+    else f"A maior parte está com status {status_mais_comum}."
+)
+resumo_executivo = (
+    f"O inventário possui {total_computadores} computadores cadastrados. "
+    f"{frase_status} Existem {total_alertas} equipamentos com alerta e "
+    f"o inventário está {inventario_completo}% completo."
+)
+st.markdown(f"<div class='executive-summary'>{escape(resumo_executivo)}</div>", unsafe_allow_html=True)
+
+grafico_layout = dict(
+    template="plotly_dark",
+    paper_bgcolor="rgba(0,0,0,0)",
+    plot_bgcolor="rgba(15,23,42,0.35)",
+    font=dict(color="#E2E8F0"),
+    height=330,
+    margin=dict(l=10, r=10, t=52, b=20),
+)
 
 dash_col1, dash_col2 = st.columns(2)
 
-status_dashboard = df_visual["status"].value_counts().reset_index()
+status_dashboard = df["status"].value_counts().reindex(list(cores.keys()), fill_value=0).reset_index()
 status_dashboard.columns = ["status", "total"]
 fig_status = go.Figure(
     go.Bar(
         x=status_dashboard["status"],
         y=status_dashboard["total"],
         marker_color=[cores.get(status, "#616161") for status in status_dashboard["status"]],
+        text=status_dashboard["total"],
+        textposition="outside",
     )
 )
-fig_status.update_layout(
-    title="Total por status",
-    height=300,
-    margin=dict(l=10, r=10, t=45, b=10),
-)
+fig_status.update_layout(title="Total por status", **grafico_layout)
+fig_status.update_yaxes(gridcolor="rgba(148,163,184,0.16)")
 dash_col1.plotly_chart(fig_status, use_container_width=True)
 
-sala_dashboard = df_visual["sala"].value_counts().head(10).reset_index()
+ordem_ram = ["4 GB", "6 GB", "8 GB", "16 GB", "32 GB", "A coletar", "Outros"]
+ram_dashboard = (
+    df["ram"]
+    .map(padronizar_ram)
+    .value_counts()
+    .reindex(ordem_ram, fill_value=0)
+    .reset_index()
+)
+ram_dashboard.columns = ["ram", "total"]
+ram_dashboard = ram_dashboard[(ram_dashboard["total"] > 0) | (ram_dashboard["ram"] != "Outros")]
+fig_ram = go.Figure(
+    go.Bar(
+        x=ram_dashboard["ram"],
+        y=ram_dashboard["total"],
+        marker_color="#14B8A6",
+        text=ram_dashboard["total"],
+        textposition="outside",
+    )
+)
+fig_ram.update_layout(title="Quantidade por memória RAM", **grafico_layout)
+fig_ram.update_yaxes(gridcolor="rgba(148,163,184,0.16)")
+dash_col2.plotly_chart(fig_ram, use_container_width=True)
+
+dash_col3, dash_col4 = st.columns(2)
+
+sistema_dashboard = (
+    df["sistema"]
+    .map(padronizar_sistema)
+    .value_counts()
+    .reindex(["Windows 10", "Windows 11", "Outros"], fill_value=0)
+    .reset_index()
+)
+sistema_dashboard.columns = ["sistema", "total"]
+fig_sistema = go.Figure(
+    go.Pie(
+        labels=sistema_dashboard["sistema"],
+        values=sistema_dashboard["total"],
+        hole=0.48,
+        marker=dict(colors=["#60A5FA", "#22C55E", "#A78BFA"]),
+    )
+)
+fig_sistema.update_layout(title="Sistema operacional", **grafico_layout)
+dash_col3.plotly_chart(fig_sistema, use_container_width=True)
+
+alertas_dashboard = contar_alertas_por_tipo(df)
+fig_alertas = go.Figure(
+    go.Bar(
+        x=alertas_dashboard["total"],
+        y=alertas_dashboard["tipo"],
+        orientation="h",
+        marker_color="#F97316",
+        text=alertas_dashboard["total"],
+        textposition="auto",
+    )
+)
+fig_alertas.update_layout(title="Alertas por tipo", **grafico_layout)
+fig_alertas.update_yaxes(autorange="reversed", gridcolor="rgba(148,163,184,0.08)")
+fig_alertas.update_xaxes(gridcolor="rgba(148,163,184,0.16)")
+dash_col4.plotly_chart(fig_alertas, use_container_width=True)
+
+dash_col5, _ = st.columns(2)
+sala_dashboard = df["sala"].replace("", "Não informado").value_counts().head(10).reset_index()
 sala_dashboard.columns = ["sala", "total"]
 fig_sala = go.Figure(
     go.Bar(
         x=sala_dashboard["total"],
         y=sala_dashboard["sala"],
         orientation="h",
-        marker_color="#1976D2",
+        marker_color="#3B82F6",
+        text=sala_dashboard["total"],
+        textposition="auto",
     )
 )
-fig_sala.update_layout(
-    title="Top salas por quantidade",
-    height=300,
-    margin=dict(l=10, r=10, t=45, b=10),
-    yaxis=dict(autorange="reversed"),
-)
-dash_col2.plotly_chart(fig_sala, use_container_width=True)
+fig_sala.update_layout(title="Top salas por quantidade", **grafico_layout)
+fig_sala.update_yaxes(autorange="reversed", gridcolor="rgba(148,163,184,0.08)")
+fig_sala.update_xaxes(gridcolor="rgba(148,163,184,0.16)")
+dash_col5.plotly_chart(fig_sala, use_container_width=True)
 
-fig_windows = go.Figure(
-    go.Pie(
-        labels=["Windows 10", "Windows 11"],
-        values=[windows_10, windows_11],
-        hole=0.45,
-    )
-)
-fig_windows.update_layout(
-    title="Comparação Windows 10 vs Windows 11",
-    height=300,
-    margin=dict(l=10, r=10, t=45, b=10),
-)
-st.plotly_chart(fig_windows, use_container_width=True)
+st.markdown("### Pendências do inventário")
+if pendencias_df.empty:
+    st.success("Nenhuma pendência encontrada nos principais campos do inventário.")
+else:
+    st.dataframe(pendencias_df, hide_index=True, use_container_width=True)
 
 st.divider()
 st.markdown("### Planta de localização")
@@ -1845,8 +2357,6 @@ if modo_posicionar:
         planta,
         key=f"planta_posicionar_{st.session_state.mapa_versao}",
     )
-    print("MODO POSICIONAR:", modo_posicionar)
-    print("SELECTED_POINTS:", coordenadas_imagem)
 
     if coordenadas_imagem:
         computador_id = st.session_state.computador_selecionado
@@ -1854,16 +2364,18 @@ if modo_posicionar:
         novo_y = int(round(coordenadas_imagem["y"]))
         novo_x = max(0, min(novo_x, largura_planta))
         novo_y = max(0, min(novo_y, altura_planta))
-        print("COMPUTADOR:", computador_id)
-        print("NOVO X:", novo_x)
-        print("NOVO Y:", novo_y)
 
-        df, salvou_posicao = salvar_posicao_computador(df, computador_id, novo_x, novo_y)
+        try:
+            df, salvou_posicao = salvar_posicao_computador(df, computador_id, novo_x, novo_y)
+        except Exception as erro:
+            salvou_posicao = False
+            st.session_state.mensagem_erro = f"Não foi possível salvar no Supabase: {erro}"
+
         st.session_state.computador_selecionado = computador_id
 
         if salvou_posicao:
             st.session_state.mensagem_sucesso = f"{computador_id} reposicionado."
-        else:
+        elif not st.session_state.mensagem_erro:
             st.session_state.mensagem_erro = "Não foi possível salvar a nova posição."
 
         st.session_state.mapa_versao += 1
